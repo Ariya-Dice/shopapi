@@ -21,7 +21,7 @@ export async function requestPayment(req: Request, res: Response): Promise<void>
     }
 
     const body = req.body as RequestPaymentBody;
-    const customerDetails = validateCustomer(body.customerDetails);
+    const customerDetails = validateCustomer(body.customer);
     const lineItems = normalizeOrderItems(body.items);
 
     const supabase = getSupabaseAdmin();

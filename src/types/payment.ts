@@ -1,7 +1,7 @@
 import type { CustomerInput } from '../services/orderValidation.js';
 
 export interface RequestPaymentBody {
-  customerDetails: CustomerInput;
+  customer: CustomerInput;
   items: Array<{ productId: number; quantity: number }>;
   /** @deprecated ignored — server calculates total */
   totalAmount?: number;
