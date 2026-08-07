@@ -7,9 +7,17 @@ const app = express();
 
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL ?? '*',
+    origin: [
+      'https://www.rbshop.ir',
+      'https://rbshop.ir',
+    ],
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['authorization', 'x-client-info', 'apikey', 'content-type'],
+    allowedHeaders: [
+      'authorization',
+      'x-client-info',
+      'apikey',
+      'content-type',
+    ],
   }),
 );
 
@@ -19,7 +27,7 @@ app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-app.use('/payment', paymentRoutes);
+app.use('/api/payment', paymentRoutes);
 
 app.use(errorHandler);
 
