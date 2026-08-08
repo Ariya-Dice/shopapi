@@ -7,5 +7,6 @@ export function errorHandler(
   _next: NextFunction,
 ): void {
   console.error('Unhandled error:', err instanceof Error ? err.message : err);
-  res.status(500).json({ error: 'در ثبت سفارش مشکلی پیش آمد. لطفاً دوباره تلاش کنید.' });
-}
+  res.status(500).json({
+    error: 'There was a problem creating the order. Please try again.',
+  });}

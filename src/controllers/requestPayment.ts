@@ -9,8 +9,34 @@ import {
 import type { DbProduct, RequestPaymentBody } from '../types/payment.js';
 
 function jsonError(res: Response, code: string, status: number): void {
+  console.error('[request-payment] Sending error response', {
+    code,
+    status,
+  });
+
   res.status(status).json({
     error: clientErrorMessage(code),
+  });
+}
+
+function logSupabaseError(
+  stage: string,
+  error: {
+    message?: string;
+    details?: string;
+    hint?: string;
+    code?: string;
+  } | null | undefined,
+): void {
+  if (!error) {
+    return;
+  }
+
+  console.error(`[request-payment] Supabase error at ${stage}`, {
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    code: error.code,
   });
 }
 
@@ -18,110 +44,141 @@ export async function requestPayment(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const requestStartedAt = Date.now();
+
+  console.log('[request-payment] ========================================');
+  console.log('[request-payment] Payment request started');
+  console.log('[request-payment] Method:', req.method);
+  console.log('[request-payment] Path:', req.originalUrl);
+  console.log('[request-payment] IP:', req.ip);
+
   try {
     /*
      * ------------------------------------------------------------
-     * 1. Zibal configuration
+     * 1. Validate environment
      * ------------------------------------------------------------
      */
-    const merchant = process.env.ZIBAL_MERCHANT?.trim();
+
+    console.log('[request-payment] Checking environment configuration');
+
+    const merchant = process.env.ZIBAL_MERCHANT;
 
     if (!merchant) {
       console.error(
-        'request-payment: ZIBAL_MERCHANT is not configured',
+        '[request-payment] Configuration error: ZIBAL_MERCHANT is not configured',
       );
 
-      jsonError(res, 'config_error', 500);
-      return;
+      throw new Error('config_error');
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 2. Parse request body
-     *
-     * Frontend historically used both:
-     *
-     *   { customer: {...}, items: [...] }
-     *
-     * and
-     *
-     *   { customerDetails: {...}, items: [...] }
-     *
-     * Accept both so the API is backwards compatible.
-     * ------------------------------------------------------------
-     */
-
-    const body = (req.body ?? {}) as RequestPaymentBody & {
-      customerDetails?: RequestPaymentBody['customer'];
-    };
-
-    const customer =
-      body.customer ?? body.customerDetails;
-
-    const customerDetails = validateCustomer(customer);
-
-    const lineItems = normalizeOrderItems(body.items);
-
-    /*
-     * ------------------------------------------------------------
-     * 3. Supabase
-     * ------------------------------------------------------------
-     */
-
-    const supabase = getSupabaseAdmin();
-
-    const backendUrl = process.env.BACKEND_URL?.trim();
+    const backendUrl = process.env.BACKEND_URL;
 
     if (!backendUrl) {
       console.error(
-        'request-payment: BACKEND_URL is not configured',
+        '[request-payment] Configuration error: BACKEND_URL is not configured',
       );
 
-      jsonError(res, 'config_error', 500);
-      return;
+      throw new Error('config_error');
     }
 
-    const callbackUrl =
-      `${backendUrl.replace(/\/+$/, '')}/api/payment/verify`;
+    const normalizedBackendUrl = backendUrl.replace(/\/+$/, '');
+    const callbackUrl = `${normalizedBackendUrl}/api/payment/verify`;
+
+    console.log('[request-payment] Environment configuration is valid');
+    console.log('[request-payment] Callback URL:', callbackUrl);
 
     /*
      * ------------------------------------------------------------
-     * 4. Load products
+     * 2. Read and validate request body
      * ------------------------------------------------------------
      */
 
-    const productIds = lineItems.map(
-      (item) => item.productId,
-    );
+    console.log('[request-payment] Validating request body');
+
+    const body = req.body as RequestPaymentBody;
+
+    if (!body) {
+      console.error('[request-payment] Request body is missing');
+
+      jsonError(res, 'invalid_order', 400);
+      return;
+    }
+
+    console.log('[request-payment] Request body received', {
+      hasCustomer: Boolean(body.customer),
+      itemsCount: Array.isArray(body.items) ? body.items.length : 0,
+    });
+
+    const customerDetails = validateCustomer(body.customer);
+
+    console.log('[request-payment] Customer validation successful', {
+      nameProvided: Boolean(customerDetails.name),
+      phoneProvided: Boolean(customerDetails.phone),
+      emailProvided: Boolean(customerDetails.email),
+      addressProvided: Boolean(customerDetails.address),
+    });
+
+    const lineItems = normalizeOrderItems(body.items);
+
+    console.log('[request-payment] Order items normalized', {
+      itemCount: lineItems.length,
+      items: lineItems.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+      })),
+    });
+
+    /*
+     * ------------------------------------------------------------
+     * 3. Initialize Supabase
+     * ------------------------------------------------------------
+     */
+
+    console.log('[request-payment] Initializing Supabase admin client');
+
+    const supabase = getSupabaseAdmin();
+
+    console.log('[request-payment] Supabase admin client initialized');
+
+    /*
+     * ------------------------------------------------------------
+     * 4. Fetch products
+     * ------------------------------------------------------------
+     */
+
+    const productIds = lineItems.map((item) => item.productId);
+
+    console.log('[request-payment] Fetching products', {
+      productIds,
+    });
 
     const {
       data: products,
       error: productsError,
     } = await supabase
       .from('products')
-      .select(
-        'id, model, goods_type, type, color, price, stock',
-      )
+      .select('id, model, goods_type, type, color, price, stock')
       .in('id', productIds);
 
     if (productsError) {
-      console.error(
-        'request-payment: products fetch failed:',
-        productsError.message,
-      );
+      logSupabaseError('products fetch', productsError);
 
       jsonError(res, 'product_not_found', 400);
       return;
     }
 
-    if (!products || products.length !== productIds.length) {
-      console.error(
-        'request-payment: one or more products not found',
-      );
+    if (!products || products.length === 0) {
+      console.error('[request-payment] No products found', {
+        productIds,
+      });
 
       jsonError(res, 'product_not_found', 400);
       return;
     }
+
+    console.log('[request-payment] Products fetched successfully', {
+      count: products.length,
+    });
 
     /*
      * ------------------------------------------------------------
@@ -135,14 +192,13 @@ export async function requestPayment(
       productMap.set(Number(product.id), product);
     }
 
+    console.log('[request-payment] Product map created', {
+      count: productMap.size,
+    });
+
     /*
      * ------------------------------------------------------------
-     * 6. Calculate order total
-     * ------------------------------------------------------------
-     *
-     * IMPORTANT:
-     * Never trust totalAmount from frontend.
-     * Price is always calculated from Supabase.
+     * 6. Validate stock and calculate total
      * ------------------------------------------------------------
      */
 
@@ -157,10 +213,16 @@ export async function requestPayment(
       unit_price: number;
     }> = [];
 
+    console.log('[request-payment] Validating order items');
+
     for (const line of lineItems) {
       const product = productMap.get(line.productId);
 
       if (!product) {
+        console.error('[request-payment] Product not found', {
+          productId: line.productId,
+        });
+
         jsonError(res, 'product_not_found', 400);
         return;
       }
@@ -168,25 +230,29 @@ export async function requestPayment(
       const unitPrice = Number(product.price ?? 0);
       const stock = Number(product.stock ?? 0);
 
-      if (
-        !Number.isFinite(unitPrice) ||
-        unitPrice <= 0
-      ) {
-        console.error(
-          `request-payment: invalid price for product ${line.productId}`,
-        );
+      console.log('[request-payment] Product validation', {
+        productId: line.productId,
+        quantity: line.quantity,
+        unitPrice,
+        stock,
+      });
+
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+        console.error('[request-payment] Invalid product price', {
+          productId: line.productId,
+          price: product.price,
+        });
 
         jsonError(res, 'invalid_order', 400);
         return;
       }
 
-      if (
-        !Number.isFinite(stock) ||
-        stock < line.quantity
-      ) {
-        console.error(
-          `request-payment: insufficient stock for product ${line.productId}`,
-        );
+      if (stock < line.quantity) {
+        console.error('[request-payment] Insufficient stock', {
+          productId: line.productId,
+          requested: line.quantity,
+          available: stock,
+        });
 
         jsonError(res, 'insufficient_stock', 400);
         return;
@@ -198,23 +264,25 @@ export async function requestPayment(
         product_id: line.productId,
         product_model: String(product.model ?? ''),
         product_goods_type: String(
-          product.goods_type ??
-            product.type ??
-            '',
+          product.goods_type || product.type || '',
         ),
-        product_color: String(
-          product.color ?? '',
-        ),
+        product_color: String(product.color ?? ''),
         quantity: line.quantity,
         unit_price: unitPrice,
       });
     }
 
-    if (
-      !Number.isFinite(totalAmount) ||
-      totalAmount <= 0
-    ) {
-      jsonError(res, 'invalid_order', 400);
+    console.log('[request-payment] Order total calculated', {
+      totalAmount,
+      itemCount: orderItemsPayload.length,
+    });
+
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      console.error('[request-payment] Invalid calculated order total', {
+        totalAmount,
+      });
+
+      jsonError(res, 'invalid_items', 400);
       return;
     }
 
@@ -224,20 +292,12 @@ export async function requestPayment(
      * ------------------------------------------------------------
      *
      * IMPORTANT:
-     *
-     * The actual database schema DOES NOT contain:
-     *
-     *   order_number
-     *
-     * Therefore:
-     *
-     *   - do not insert it
-     *   - do not select it
-     *   - do not read it
-     *
-     * The UUID "id" is the order identifier.
+     * The current database schema does NOT contain order_number.
+     * Therefore we only select the existing id column.
      * ------------------------------------------------------------
      */
+
+    console.log('[request-payment] Creating order in database');
 
     const {
       data: order,
@@ -250,23 +310,34 @@ export async function requestPayment(
         customer_email: customerDetails.email ?? '',
         customer_address: customerDetails.address,
         customer_note: customerDetails.note ?? '',
-        total_amount: Math.round(totalAmount),
+        total_amount: totalAmount,
         status: 'pending',
       })
       .select('id')
       .single();
 
-    if (orderError || !order) {
+    if (orderError) {
+      logSupabaseError('order insert', orderError);
+
+      console.error('[request-payment] Order creation failed');
+
+      jsonError(res, 'invalid_order', 500);
+      return;
+    }
+
+    if (!order) {
       console.error(
-        'request-payment: order insert failed:',
-        orderError?.message,
-        orderError?.details,
-        orderError?.hint,
+        '[request-payment] Order creation returned no order data',
       );
 
       jsonError(res, 'invalid_order', 500);
       return;
     }
+
+    console.log('[request-payment] Order created successfully', {
+      orderId: order.id,
+      totalAmount,
+    });
 
     /*
      * ------------------------------------------------------------
@@ -274,12 +345,15 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    const orderItems = orderItemsPayload.map(
-      (item) => ({
-        order_id: order.id,
-        ...item,
-      }),
-    );
+    const orderItems = orderItemsPayload.map((item) => ({
+      order_id: order.id,
+      ...item,
+    }));
+
+    console.log('[request-payment] Creating order items', {
+      orderId: order.id,
+      itemCount: orderItems.length,
+    });
 
     const {
       error: itemsError,
@@ -288,89 +362,194 @@ export async function requestPayment(
       .insert(orderItems);
 
     if (itemsError) {
+      logSupabaseError('order_items insert', itemsError);
+
       console.error(
-        'request-payment: order_items insert failed:',
-        itemsError.message,
-        itemsError.details,
-        itemsError.hint,
+        '[request-payment] Order items creation failed',
+        {
+          orderId: order.id,
+        },
       );
 
-      /*
-       * Roll back order if order_items failed.
-       */
-      await supabase
+      console.log(
+        '[request-payment] Attempting to delete incomplete order',
+        {
+          orderId: order.id,
+        },
+      );
+
+      const {
+        error: deleteOrderError,
+      } = await supabase
         .from('orders')
         .delete()
         .eq('id', order.id);
+
+      if (deleteOrderError) {
+        logSupabaseError(
+          'rollback order after order_items failure',
+          deleteOrderError,
+        );
+      } else {
+        console.log(
+          '[request-payment] Incomplete order successfully rolled back',
+          {
+            orderId: order.id,
+          },
+        );
+      }
 
       jsonError(res, 'invalid_order', 500);
       return;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 9. Create Zibal payment
-     * ------------------------------------------------------------
-     *
-     * Product prices appear to be stored in Toman.
-     * Zibal expects Rial.
-     * ------------------------------------------------------------
-     */
-
-    const amountRials =
-      Math.round(totalAmount * 10);
-
-    const zibal = await zibalRequest({
-      merchant,
-      amount: amountRials,
-      callbackUrl,
-
-      /*
-       * Database has no order_number.
-       * Use UUID order.id instead.
-       */
-      description: `سفارش ${order.id}`,
-
+    console.log('[request-payment] Order items created successfully', {
       orderId: order.id,
-      mobile: customerDetails.phone,
+      itemCount: orderItems.length,
     });
 
     /*
      * ------------------------------------------------------------
-     * 10. Zibal failure
+     * 9. Calculate Zibal amount
+     * ------------------------------------------------------------
+     *
+     * The database stores the product price in the current
+     * application unit. Zibal expects Rials.
      * ------------------------------------------------------------
      */
 
-    if (
-      zibal.result !== 100 ||
-      !zibal.trackId
-    ) {
+    const amountRials = Math.round(totalAmount * 10);
+
+    console.log('[request-payment] Payment amount calculated', {
+      orderId: order.id,
+      totalAmount,
+      amountRials,
+    });
+
+    /*
+     * ------------------------------------------------------------
+     * 10. Create Zibal payment request
+     * ------------------------------------------------------------
+     */
+
+    console.log('[request-payment] Sending payment request to Zibal', {
+      orderId: order.id,
+      amountRials,
+      callbackUrl,
+    });
+
+    let zibal;
+
+    try {
+      zibal = await zibalRequest({
+        merchant,
+        amount: amountRials,
+        callbackUrl,
+        description: `Order ${order.id}`,
+        orderId: order.id,
+        mobile: customerDetails.phone,
+      });
+    } catch (zibalError) {
       console.error(
-        'request-payment: zibal failed:',
-        zibal.result,
-        zibal.message,
+        '[request-payment] Zibal request threw an exception',
+        {
+          orderId: order.id,
+          error:
+            zibalError instanceof Error
+              ? zibalError.message
+              : zibalError,
+        },
       );
 
-      await supabase
+      console.log(
+        '[request-payment] Marking order as failed because Zibal request failed',
+        {
+          orderId: order.id,
+        },
+      );
+
+      const {
+        error: updateError,
+      } = await supabase
         .from('orders')
         .update({
           status: 'failed',
         })
         .eq('id', order.id);
 
+      if (updateError) {
+        logSupabaseError(
+          'mark order failed after Zibal exception',
+          updateError,
+        );
+      }
+
       res.status(502).json({
-        error:
-          'خطا در ایجاد تراکنش پرداخت. لطفاً دوباره تلاش کنید.',
+        error: 'Payment gateway request failed. Please try again.',
       });
 
       return;
     }
 
+    console.log('[request-payment] Zibal response received', {
+      orderId: order.id,
+      result: zibal.result,
+      trackId: zibal.trackId ?? null,
+      message: zibal.message ?? null,
+    });
+
     /*
      * ------------------------------------------------------------
-     * 11. Save Zibal track ID
+     * 11. Validate Zibal response
      * ------------------------------------------------------------
      */
+
+    if (zibal.result !== 100 || !zibal.trackId) {
+      console.error('[request-payment] Zibal payment creation failed', {
+        orderId: order.id,
+        result: zibal.result,
+        trackId: zibal.trackId ?? null,
+        message: zibal.message ?? null,
+      });
+
+      const {
+        error: updateError,
+      } = await supabase
+        .from('orders')
+        .update({
+          status: 'failed',
+        })
+        .eq('id', order.id);
+
+      if (updateError) {
+        logSupabaseError(
+          'mark order failed after Zibal failure',
+          updateError,
+        );
+      }
+
+      res.status(502).json({
+        error: 'Failed to create payment transaction. Please try again.',
+      });
+
+      return;
+    }
+
+    console.log('[request-payment] Zibal payment created successfully', {
+      orderId: order.id,
+      trackId: zibal.trackId,
+    });
+
+    /*
+     * ------------------------------------------------------------
+     * 12. Save Zibal track ID
+     * ------------------------------------------------------------
+     */
+
+    console.log('[request-payment] Saving Zibal track ID', {
+      orderId: order.id,
+      trackId: zibal.trackId,
+    });
 
     const {
       error: trackUpdateError,
@@ -382,61 +561,98 @@ export async function requestPayment(
       .eq('id', order.id);
 
     if (trackUpdateError) {
-      console.error(
-        'request-payment: failed to save zibal track id:',
-        trackUpdateError.message,
+      logSupabaseError(
+        'save Zibal track ID',
+        trackUpdateError,
       );
 
-      /*
-       * Payment was created but tracking ID could not
-       * be persisted. Mark order as failed so it is not
-       * accidentally treated as a normal pending order.
-       */
-      await supabase
-        .from('orders')
-        .update({
-          status: 'failed',
-        })
-        .eq('id', order.id);
+      console.error(
+        '[request-payment] Failed to save Zibal track ID',
+        {
+          orderId: order.id,
+          trackId: zibal.trackId,
+        },
+      );
 
       res.status(500).json({
-        error:
-          'خطا در ذخیره تراکنش پرداخت. لطفاً دوباره تلاش کنید.',
+        error: 'Failed to save payment transaction. Please try again.',
       });
 
       return;
     }
 
+    console.log(
+      '[request-payment] Zibal track ID saved successfully',
+      {
+        orderId: order.id,
+        trackId: zibal.trackId,
+      },
+    );
+
     /*
      * ------------------------------------------------------------
-     * 12. Success response
-     * ------------------------------------------------------------
-     *
-     * There is no order_number in database.
-     * Return order.id as orderId and orderNumber for
-     * frontend compatibility.
+     * 13. Build payment URL
      * ------------------------------------------------------------
      */
 
-    res.status(200).json({
+    const paymentUrl = zibalStartUrl(zibal.trackId);
+
+    console.log('[request-payment] Payment URL generated', {
       orderId: order.id,
-      orderNumber: order.id,
       trackId: zibal.trackId,
-      paymentUrl: zibalStartUrl(
-        zibal.trackId,
-      ),
     });
 
+    /*
+     * ------------------------------------------------------------
+     * 14. Send successful response
+     * ------------------------------------------------------------
+     */
+
+    const durationMs = Date.now() - requestStartedAt;
+
+    console.log('[request-payment] Payment request completed successfully', {
+      orderId: order.id,
+      trackId: zibal.trackId,
+      totalAmount,
+      amountRials,
+      durationMs,
+    });
+
+    console.log('[request-payment] ========================================');
+
+    res.status(200).json({
+      orderId: order.id,
+
+      // There is no order_number column in the current database.
+      // Use the UUID order ID as the order reference.
+      orderNumber: order.id,
+
+      trackId: zibal.trackId,
+      paymentUrl,
+    });
   } catch (err) {
+    const durationMs = Date.now() - requestStartedAt;
+
+    const errorMessage =
+      err instanceof Error
+        ? err.message
+        : 'Unknown error';
+
+    const errorStack =
+      err instanceof Error
+        ? err.stack
+        : undefined;
+
+    console.error('[request-payment] Unexpected error', {
+      message: errorMessage,
+      stack: errorStack,
+      durationMs,
+    });
+
     const code =
       err instanceof Error
         ? err.message
         : 'invalid_order';
-
-    console.error(
-      'request-payment error:',
-      err,
-    );
 
     const status =
       code.startsWith('invalid_') ||
@@ -445,10 +661,13 @@ export async function requestPayment(
         ? 400
         : 500;
 
-    jsonError(
-      res,
+    console.error('[request-payment] Returning error response', {
       code,
       status,
-    );
+    });
+
+    jsonError(res, code, status);
+
+    console.log('[request-payment] ========================================');
   }
 }

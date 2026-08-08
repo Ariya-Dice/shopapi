@@ -90,21 +90,21 @@ export function normalizeOrderItems(items: unknown): OrderLineInput[] {
 
   return normalized;
 }
-
 export function clientErrorMessage(code: string): string {
   const map: Record<string, string> = {
-    invalid_customer: 'اطلاعات مشتری نامعتبر است.',
-    invalid_name: 'نام و نام خانوادگی نامعتبر است.',
-    invalid_phone: 'شماره موبایل باید با 09 شروع شود و ۱۱ رقم باشد.',
-    invalid_address: 'آدرس نامعتبر است.',
-    invalid_email: 'ایمیل نامعتبر است.',
-    invalid_note: 'توضیحات بیش از حد طولانی است.',
-    invalid_items: 'سبد خرید نامعتبر است.',
-    invalid_quantity: 'تعداد نامعتبر است.',
-    invalid_product_id: 'محصول نامعتبر است.',
-    product_not_found: 'یکی از محصولات یافت نشد.',
-    insufficient_stock: 'موجودی یکی از محصولات کافی نیست.',
-    invalid_order: 'در ثبت سفارش مشکلی پیش آمد. لطفاً دوباره تلاش کنید.',
+    invalid_customer: 'Invalid customer information.',
+    invalid_name: 'Invalid first and last name.',
+    invalid_phone: 'Phone number must start with 09 and contain 11 digits.',
+    invalid_address: 'Invalid address.',
+    invalid_email: 'Invalid email address.',
+    invalid_note: 'Note is too long.',
+    invalid_items: 'Invalid shopping cart.',
+    invalid_quantity: 'Invalid quantity.',
+    invalid_product_id: 'Invalid product.',
+    product_not_found: 'One of the products was not found.',
+    insufficient_stock: 'Insufficient stock for one of the products.',
+    invalid_order: 'There was a problem creating the order. Please try again.',
   };
-  return map[code] ?? 'در ثبت سفارش مشکلی پیش آمد. لطفاً دوباره تلاش کنید.';
+
+  return map[code] ?? 'There was a problem creating the order. Please try again.';
 }
