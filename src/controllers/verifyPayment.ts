@@ -51,6 +51,53 @@ function getVerifyParams(
   };
 }
 
+function logSupabaseError(
+  stage: string,
+  error: {
+    message?: string;
+    details?: string;
+    hint?: string;
+    code?: string;
+  } | null | undefined,
+): void {
+  if (!error) {
+    return;
+  }
+
+  console.error(`[PAYMENT_VERIFY] Supabase error at ${stage}`, {
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    code: error.code,
+  });
+}
+
+async function rollbackStockChanges(
+  orderId: string,
+  updatedProducts: Array<{
+    id: number;
+    oldStock: number;
+    newStock: number;
+  }>,
+): Promise<void> {
+  for (const changed of [...updatedProducts].reverse()) {
+    const { error: rollbackError } = await getSupabaseAdmin()
+      .from('products')
+      .update({ stock: changed.oldStock })
+      .eq('id', changed.id)
+      .eq('stock', changed.newStock);
+
+    if (rollbackError) {
+      console.error('[PAYMENT_VERIFY] Stock rollback failed', {
+        orderId,
+        productId: changed.id,
+        message: rollbackError.message,
+        code: rollbackError.code,
+      });
+    }
+  }
+}
+
 /**
  * Complete a paid order without PostgreSQL RPC.
  *
@@ -96,10 +143,7 @@ async function completeOrderPayment(
     .maybeSingle();
 
   if (orderError) {
-    console.error(
-      'complete-order: failed to load order:',
-      orderError.message,
-    );
+    logSupabaseError('order load', orderError);
 
     return {
       ok: false,
@@ -125,6 +169,8 @@ async function completeOrderPayment(
    */
 
   if (order.status === 'paid') {
+    console.log('[PAYMENT_VERIFY] Order already paid', { orderId });
+
     return {
       ok: true,
       alreadyPaid: true,
@@ -148,10 +194,7 @@ async function completeOrderPayment(
     .eq('order_id', orderId);
 
   if (orderItemsError) {
-    console.error(
-      'complete-order: failed to load order items:',
-      orderItemsError.message,
-    );
+    logSupabaseError('order items load', orderItemsError);
 
     return {
       ok: false,
@@ -163,10 +206,7 @@ async function completeOrderPayment(
     !orderItems ||
     orderItems.length === 0
   ) {
-    console.error(
-      'complete-order: order has no items:',
-      orderId,
-    );
+    console.error('[PAYMENT_VERIFY] Order has no items', { orderId });
 
     return {
       ok: false,
@@ -193,10 +233,7 @@ async function completeOrderPayment(
     .in('id', productIds);
 
   if (productsError) {
-    console.error(
-      'complete-order: products load failed:',
-      productsError.message,
-    );
+    logSupabaseError('products load', productsError);
 
     return {
       ok: false,
@@ -208,10 +245,9 @@ async function completeOrderPayment(
     !products ||
     products.length !== productIds.length
   ) {
-    console.error(
-      'complete-order: one or more products not found:',
+    console.error('[PAYMENT_VERIFY] One or more products not found', {
       orderId,
-    );
+    });
 
     return {
       ok: false,
@@ -272,12 +308,11 @@ async function completeOrderPayment(
       !Number.isInteger(quantity) ||
       quantity <= 0
     ) {
-      console.error(
-        'complete-order: invalid quantity:',
+      console.error('[PAYMENT_VERIFY] Invalid quantity', {
         orderId,
         productId,
         quantity,
-      );
+      });
 
       return {
         ok: false,
@@ -286,15 +321,12 @@ async function completeOrderPayment(
     }
 
     if (product.stock < quantity) {
-      console.error(
-        'complete-order: insufficient stock:',
-        {
-          orderId,
-          productId,
-          stock: product.stock,
-          requested: quantity,
-        },
-      );
+      console.error('[PAYMENT_VERIFY] Insufficient stock', {
+        orderId,
+        productId,
+        stock: product.stock,
+        requested: quantity,
+      });
 
       return {
         ok: false,
@@ -366,45 +398,14 @@ async function completeOrderPayment(
       updateError ||
       !updatedProduct
     ) {
-      console.error(
-        'complete-order: stock update failed:',
-        {
-          orderId,
-          productId,
-          error:
-            updateError?.message,
-        },
-      );
+      console.error('[PAYMENT_VERIFY] Stock update failed', {
+        orderId,
+        productId,
+        message: updateError?.message,
+        code: updateError?.code,
+      });
 
-      /*
-       * Roll back all stock changes made by this
-       * completion attempt.
-       */
-      for (
-        const changed of updatedProducts.reverse()
-      ) {
-        const {
-          error: rollbackError,
-        } = await supabase
-          .from('products')
-          .update({
-            stock: changed.oldStock,
-          })
-          .eq('id', changed.id)
-          .eq('stock', changed.newStock);
-
-        if (rollbackError) {
-          console.error(
-            'complete-order: STOCK ROLLBACK FAILED:',
-            {
-              orderId,
-              productId: changed.id,
-              error:
-                rollbackError.message,
-            },
-          );
-        }
-      }
+      await rollbackStockChanges(orderId, updatedProducts);
 
       return {
         ok: false,
@@ -445,50 +446,38 @@ async function completeOrderPayment(
     paidError ||
     !paidOrder
   ) {
-    console.error(
-      'complete-order: failed to mark order paid:',
-      {
+    logSupabaseError('mark order paid', paidError);
+
+    const {
+      data: recheckOrder,
+    } = await supabase
+      .from('orders')
+      .select('status')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (recheckOrder?.status === 'paid') {
+      console.log('[PAYMENT_VERIFY] Order paid by concurrent callback', {
         orderId,
-        error:
-          paidError?.message,
-      },
-    );
+      });
 
-    /*
-     * Try to restore stock because payment state could not
-     * be persisted.
-     */
-    for (
-      const changed of updatedProducts.reverse()
-    ) {
-      const {
-        error: rollbackError,
-      } = await supabase
-        .from('products')
-        .update({
-          stock: changed.oldStock,
-        })
-        .eq('id', changed.id)
-        .eq('stock', changed.newStock);
+      await rollbackStockChanges(orderId, updatedProducts);
 
-      if (rollbackError) {
-        console.error(
-          'complete-order: STOCK ROLLBACK FAILED:',
-          {
-            orderId,
-            productId: changed.id,
-            error:
-              rollbackError.message,
-          },
-        );
-      }
+      return {
+        ok: true,
+        alreadyPaid: true,
+      };
     }
+
+    await rollbackStockChanges(orderId, updatedProducts);
 
     return {
       ok: false,
       reason: 'order_update_failed',
     };
   }
+
+  console.log('[PAYMENT_VERIFY] Order marked paid', { orderId });
 
   /*
    * ------------------------------------------------------------
@@ -509,11 +498,7 @@ export async function verifyPayment(
   const base = frontendBase();
 
   try {
-    /*
-     * ------------------------------------------------------------
-     * 1. Read callback parameters
-     * ------------------------------------------------------------
-     */
+    console.log('[PAYMENT_VERIFY] Callback received');
 
     const {
       success,
@@ -522,6 +507,8 @@ export async function verifyPayment(
     } = getVerifyParams(req);
 
     if (!trackIdRaw) {
+      console.error('[PAYMENT_VERIFY] Missing trackId');
+
       redirect(
         res,
         `${base}/#/payment/failed?reason=missing_track_id`,
@@ -554,9 +541,7 @@ export async function verifyPayment(
       process.env.ZIBAL_MERCHANT?.trim();
 
     if (!merchant) {
-      console.error(
-        'verify-payment: ZIBAL_MERCHANT not configured',
-      );
+      console.error('[PAYMENT_VERIFY] ZIBAL_MERCHANT not configured');
 
       redirect(
         res,
@@ -600,10 +585,7 @@ export async function verifyPayment(
         .maybeSingle();
 
       if (error) {
-        console.error(
-          'verify-payment: order lookup by id failed:',
-          error.message,
-        );
+        logSupabaseError('order lookup by id', error);
       }
 
       order = data;
@@ -625,16 +607,15 @@ export async function verifyPayment(
         .maybeSingle();
 
       if (error) {
-        console.error(
-          'verify-payment: order lookup by trackId failed:',
-          error.message,
-        );
+        logSupabaseError('order lookup by trackId', error);
       }
 
       order = data;
     }
 
     if (!order) {
+      console.error('[PAYMENT_VERIFY] Order not found', { trackId });
+
       redirect(
         res,
         `${base}/#/payment/failed?reason=order_not_found`,
@@ -654,16 +635,20 @@ export async function verifyPayment(
      * ------------------------------------------------------------
      */
 
+    console.log('[PAYMENT_VERIFY] Order loaded', {
+      orderId: order.id,
+      status: order.status,
+      trackId,
+    });
+
     const successQuery =
       `orderId=${encodeURIComponent(order.id)}`;
 
-    /*
-     * ------------------------------------------------------------
-     * 5. Idempotency
-     * ------------------------------------------------------------
-     */
-
     if (order.status === 'paid') {
+      console.log('[PAYMENT_VERIFY] Order already paid, redirecting to success', {
+        orderId: order.id,
+      });
+
       redirect(
         res,
         `${base}/#/payment/success?${successQuery}`,
@@ -679,6 +664,11 @@ export async function verifyPayment(
      */
 
     if (success !== '1') {
+      console.log('[PAYMENT_VERIFY] Zibal callback reported failure', {
+        orderId: order.id,
+        success,
+      });
+
       if (
         order.status === 'pending'
       ) {
@@ -712,12 +702,11 @@ export async function verifyPayment(
       Number(order.zibal_track_id) !==
         trackId
     ) {
-      console.error(
-        'verify-payment: trackId mismatch',
-        order.id,
-        order.zibal_track_id,
-        trackId,
-      );
+      console.error('[PAYMENT_VERIFY] TrackId mismatch', {
+        orderId: order.id,
+        storedTrackId: order.zibal_track_id,
+        callbackTrackId: trackId,
+      });
 
       await supabase
         .from('orders')
@@ -743,6 +732,11 @@ export async function verifyPayment(
      * ------------------------------------------------------------
      */
 
+    console.log('[PAYMENT_VERIFY] Calling Zibal verify', {
+      orderId: order.id,
+      trackId,
+    });
+
     const verify =
       await zibalVerify({
         merchant,
@@ -750,12 +744,11 @@ export async function verifyPayment(
       });
 
     if (verify.result !== 100) {
-      console.error(
-        'verify-payment: zibal verify failed',
-        order.id,
-        verify.result,
-        verify.message,
-      );
+      console.error('[PAYMENT_VERIFY] Zibal verify failed', {
+        orderId: order.id,
+        result: verify.result,
+        message: verify.message,
+      });
 
       await supabase
         .from('orders')
@@ -797,14 +790,11 @@ export async function verifyPayment(
       paidRials != null &&
       paidRials !== expectedRials
     ) {
-      console.error(
-        'verify-payment: amount mismatch',
-        {
-          orderId: order.id,
-          paidRials,
-          expectedRials,
-        },
-      );
+      console.error('[PAYMENT_VERIFY] Amount mismatch', {
+        orderId: order.id,
+        paidRials,
+        expectedRials,
+      });
 
       await supabase
         .from('orders')
@@ -851,6 +841,12 @@ export async function verifyPayment(
      * ------------------------------------------------------------
      */
 
+    console.log('[PAYMENT_VERIFY] Zibal verify succeeded', {
+      orderId: order.id,
+      paidRials,
+      expectedRials,
+    });
+
     const completion =
       await completeOrderPayment(
         order.id,
@@ -864,14 +860,10 @@ export async function verifyPayment(
      */
 
     if (!completion.ok) {
-      console.error(
-        'verify-payment: order completion failed',
-        {
-          orderId: order.id,
-          reason:
-            completion.reason,
-        },
-      );
+      console.error('[PAYMENT_VERIFY] Order completion failed', {
+        orderId: order.id,
+        reason: completion.reason,
+      });
 
       if (
         completion.reason ===
@@ -926,17 +918,18 @@ export async function verifyPayment(
      * ------------------------------------------------------------
      */
 
+    console.log('[PAYMENT_VERIFY] Payment verified successfully', {
+      orderId: order.id,
+    });
+
     redirect(
       res,
       `${base}/#/payment/success?${successQuery}`,
     );
   } catch (err) {
-    console.error(
-      'verify-payment error:',
-      err instanceof Error
-        ? err.message
-        : err,
-    );
+    console.error('[PAYMENT_VERIFY] Unexpected error', {
+      message: err instanceof Error ? err.message : err,
+    });
 
     redirect(
       res,

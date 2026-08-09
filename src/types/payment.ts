@@ -4,9 +4,14 @@ import type {
 
 export interface RequestPaymentBody {
   /**
-   * Preferred field used by the backend.
+   * Preferred field used by the backend and frontend.
    */
-  customer: CustomerInput;
+  customer?: CustomerInput;
+
+  /**
+   * Legacy alias accepted for backward compatibility.
+   */
+  customerDetails?: CustomerInput;
 
   /**
    * Items selected by customer.

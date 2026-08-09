@@ -9,7 +9,7 @@ import {
 import type { DbProduct, RequestPaymentBody } from '../types/payment.js';
 
 function jsonError(res: Response, code: string, status: number): void {
-  console.error('[request-payment] Sending error response', {
+  console.error('[PAYMENT_REQUEST] Sending error response', {
     code,
     status,
   });
@@ -32,7 +32,7 @@ function logSupabaseError(
     return;
   }
 
-  console.error(`[request-payment] Supabase error at ${stage}`, {
+  console.error(`[PAYMENT_REQUEST] Supabase error at ${stage}`, {
     message: error.message,
     details: error.details,
     hint: error.hint,
@@ -46,11 +46,11 @@ export async function requestPayment(
 ): Promise<void> {
   const requestStartedAt = Date.now();
 
-  console.log('[request-payment] ========================================');
-  console.log('[request-payment] Payment request started');
-  console.log('[request-payment] Method:', req.method);
-  console.log('[request-payment] Path:', req.originalUrl);
-  console.log('[request-payment] IP:', req.ip);
+  console.log('[PAYMENT_REQUEST] ========================================');
+  console.log('[PAYMENT_REQUEST] Payment request started');
+  console.log('[PAYMENT_REQUEST] Method:', req.method);
+  console.log('[PAYMENT_REQUEST] Path:', req.originalUrl);
+  console.log('[PAYMENT_REQUEST] IP:', req.ip);
 
   try {
     /*
@@ -59,13 +59,13 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Checking environment configuration');
+    console.log('[PAYMENT_REQUEST] Checking environment configuration');
 
     const merchant = process.env.ZIBAL_MERCHANT;
 
     if (!merchant) {
       console.error(
-        '[request-payment] Configuration error: ZIBAL_MERCHANT is not configured',
+        '[PAYMENT_REQUEST] Configuration error: ZIBAL_MERCHANT is not configured',
       );
 
       throw new Error('config_error');
@@ -75,7 +75,7 @@ export async function requestPayment(
 
     if (!backendUrl) {
       console.error(
-        '[request-payment] Configuration error: BACKEND_URL is not configured',
+        '[PAYMENT_REQUEST] Configuration error: BACKEND_URL is not configured',
       );
 
       throw new Error('config_error');
@@ -84,8 +84,8 @@ export async function requestPayment(
     const normalizedBackendUrl = backendUrl.replace(/\/+$/, '');
     const callbackUrl = `${normalizedBackendUrl}/api/payment/verify`;
 
-    console.log('[request-payment] Environment configuration is valid');
-    console.log('[request-payment] Callback URL:', callbackUrl);
+    console.log('[PAYMENT_REQUEST] Environment configuration is valid');
+    console.log('[PAYMENT_REQUEST] Callback URL:', callbackUrl);
 
     /*
      * ------------------------------------------------------------
@@ -93,34 +93,59 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Validating request body');
+    console.log('[PAYMENT_REQUEST] Validating request body');
 
-    const body = req.body as RequestPaymentBody;
+    console.log('[PAYMENT_REQUEST] Request received');
+
+    const body = req.body as RequestPaymentBody & {
+      customerDetails?: RequestPaymentBody['customer'];
+    };
 
     if (!body) {
-      console.error('[request-payment] Request body is missing');
+      console.error('[PAYMENT_REQUEST] Request body is missing');
 
       jsonError(res, 'invalid_order', 400);
       return;
     }
 
-    console.log('[request-payment] Request body received', {
-      hasCustomer: Boolean(body.customer),
-      itemsCount: Array.isArray(body.items) ? body.items.length : 0,
-    });
+    const customerInput =
+      body.customer ?? body.customerDetails;
 
-    const customerDetails = validateCustomer(body.customer);
+    let customerDetails;
 
-    console.log('[request-payment] Customer validation successful', {
-      nameProvided: Boolean(customerDetails.name),
-      phoneProvided: Boolean(customerDetails.phone),
-      emailProvided: Boolean(customerDetails.email),
-      addressProvided: Boolean(customerDetails.address),
-    });
+    try {
+      customerDetails = validateCustomer(customerInput);
+    } catch (validationError) {
+      console.error('[PAYMENT_REQUEST] Validation failed', {
+        step: 'customer',
+        code:
+          validationError instanceof Error
+            ? validationError.message
+            : 'invalid_customer',
+      });
 
-    const lineItems = normalizeOrderItems(body.items);
+      throw validationError;
+    }
 
-    console.log('[request-payment] Order items normalized', {
+    console.log('[PAYMENT_REQUEST] Customer validated');
+
+    let lineItems;
+
+    try {
+      lineItems = normalizeOrderItems(body.items);
+    } catch (validationError) {
+      console.error('[PAYMENT_REQUEST] Validation failed', {
+        step: 'items',
+        code:
+          validationError instanceof Error
+            ? validationError.message
+            : 'invalid_items',
+      });
+
+      throw validationError;
+    }
+
+    console.log('[PAYMENT_REQUEST] Items validated', {
       itemCount: lineItems.length,
       items: lineItems.map((item) => ({
         productId: item.productId,
@@ -134,11 +159,11 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Initializing Supabase admin client');
+    console.log('[PAYMENT_REQUEST] Initializing Supabase admin client');
 
     const supabase = getSupabaseAdmin();
 
-    console.log('[request-payment] Supabase admin client initialized');
+    console.log('[PAYMENT_REQUEST] Supabase admin client initialized');
 
     /*
      * ------------------------------------------------------------
@@ -148,7 +173,7 @@ export async function requestPayment(
 
     const productIds = lineItems.map((item) => item.productId);
 
-    console.log('[request-payment] Fetching products', {
+    console.log('[PAYMENT_REQUEST] Fetching products', {
       productIds,
     });
 
@@ -161,6 +186,7 @@ export async function requestPayment(
       .in('id', productIds);
 
     if (productsError) {
+      console.error('[PAYMENT_REQUEST] Product query failed');
       logSupabaseError('products fetch', productsError);
 
       jsonError(res, 'product_not_found', 400);
@@ -168,7 +194,7 @@ export async function requestPayment(
     }
 
     if (!products || products.length === 0) {
-      console.error('[request-payment] No products found', {
+      console.error('[PAYMENT_REQUEST] No products found', {
         productIds,
       });
 
@@ -176,7 +202,7 @@ export async function requestPayment(
       return;
     }
 
-    console.log('[request-payment] Products fetched successfully', {
+    console.log('[PAYMENT_REQUEST] Products loaded', {
       count: products.length,
     });
 
@@ -192,7 +218,7 @@ export async function requestPayment(
       productMap.set(Number(product.id), product);
     }
 
-    console.log('[request-payment] Product map created', {
+    console.log('[PAYMENT_REQUEST] Product map created', {
       count: productMap.size,
     });
 
@@ -213,13 +239,13 @@ export async function requestPayment(
       unit_price: number;
     }> = [];
 
-    console.log('[request-payment] Validating order items');
+    console.log('[PAYMENT_REQUEST] Validating order items');
 
     for (const line of lineItems) {
       const product = productMap.get(line.productId);
 
       if (!product) {
-        console.error('[request-payment] Product not found', {
+        console.error('[PAYMENT_REQUEST] Product not found', {
           productId: line.productId,
         });
 
@@ -230,7 +256,7 @@ export async function requestPayment(
       const unitPrice = Number(product.price ?? 0);
       const stock = Number(product.stock ?? 0);
 
-      console.log('[request-payment] Product validation', {
+      console.log('[PAYMENT_REQUEST] Product validation', {
         productId: line.productId,
         quantity: line.quantity,
         unitPrice,
@@ -238,7 +264,7 @@ export async function requestPayment(
       });
 
       if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
-        console.error('[request-payment] Invalid product price', {
+        console.error('[PAYMENT_REQUEST] Invalid product price', {
           productId: line.productId,
           price: product.price,
         });
@@ -248,7 +274,7 @@ export async function requestPayment(
       }
 
       if (stock < line.quantity) {
-        console.error('[request-payment] Insufficient stock', {
+        console.error('[PAYMENT_REQUEST] Insufficient stock', {
           productId: line.productId,
           requested: line.quantity,
           available: stock,
@@ -272,13 +298,13 @@ export async function requestPayment(
       });
     }
 
-    console.log('[request-payment] Order total calculated', {
+    console.log('[PAYMENT_REQUEST] Total calculated', {
       totalAmount,
       itemCount: orderItemsPayload.length,
     });
 
     if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-      console.error('[request-payment] Invalid calculated order total', {
+      console.error('[PAYMENT_REQUEST] Invalid calculated order total', {
         totalAmount,
       });
 
@@ -297,7 +323,7 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Creating order in database');
+    console.log('[PAYMENT_REQUEST] Creating order in database');
 
     const {
       data: order,
@@ -317,9 +343,8 @@ export async function requestPayment(
       .single();
 
     if (orderError) {
+      console.error('[PAYMENT_REQUEST] Order insert failed');
       logSupabaseError('order insert', orderError);
-
-      console.error('[request-payment] Order creation failed');
 
       jsonError(res, 'invalid_order', 500);
       return;
@@ -327,14 +352,14 @@ export async function requestPayment(
 
     if (!order) {
       console.error(
-        '[request-payment] Order creation returned no order data',
+        '[PAYMENT_REQUEST] Order creation returned no order data',
       );
 
       jsonError(res, 'invalid_order', 500);
       return;
     }
 
-    console.log('[request-payment] Order created successfully', {
+    console.log('[PAYMENT_REQUEST] Order created', {
       orderId: order.id,
       totalAmount,
     });
@@ -350,7 +375,7 @@ export async function requestPayment(
       ...item,
     }));
 
-    console.log('[request-payment] Creating order items', {
+    console.log('[PAYMENT_REQUEST] Creating order items', {
       orderId: order.id,
       itemCount: orderItems.length,
     });
@@ -362,17 +387,18 @@ export async function requestPayment(
       .insert(orderItems);
 
     if (itemsError) {
+      console.error('[PAYMENT_REQUEST] Order items insert failed');
       logSupabaseError('order_items insert', itemsError);
 
       console.error(
-        '[request-payment] Order items creation failed',
+        '[PAYMENT_REQUEST] Order items creation failed',
         {
           orderId: order.id,
         },
       );
 
       console.log(
-        '[request-payment] Attempting to delete incomplete order',
+        '[PAYMENT_REQUEST] Attempting to delete incomplete order',
         {
           orderId: order.id,
         },
@@ -392,7 +418,7 @@ export async function requestPayment(
         );
       } else {
         console.log(
-          '[request-payment] Incomplete order successfully rolled back',
+          '[PAYMENT_REQUEST] Incomplete order successfully rolled back',
           {
             orderId: order.id,
           },
@@ -403,7 +429,7 @@ export async function requestPayment(
       return;
     }
 
-    console.log('[request-payment] Order items created successfully', {
+    console.log('[PAYMENT_REQUEST] Order items created', {
       orderId: order.id,
       itemCount: orderItems.length,
     });
@@ -420,7 +446,7 @@ export async function requestPayment(
 
     const amountRials = Math.round(totalAmount * 10);
 
-    console.log('[request-payment] Payment amount calculated', {
+    console.log('[PAYMENT_REQUEST] Payment amount calculated', {
       orderId: order.id,
       totalAmount,
       amountRials,
@@ -432,7 +458,7 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Sending payment request to Zibal', {
+    console.log('[PAYMENT_REQUEST] Calling Zibal', {
       orderId: order.id,
       amountRials,
       callbackUrl,
@@ -450,19 +476,16 @@ export async function requestPayment(
         mobile: customerDetails.phone,
       });
     } catch (zibalError) {
-      console.error(
-        '[request-payment] Zibal request threw an exception',
-        {
-          orderId: order.id,
-          error:
-            zibalError instanceof Error
-              ? zibalError.message
-              : zibalError,
-        },
-      );
+      console.error('[PAYMENT_REQUEST] Zibal request failed', {
+        orderId: order.id,
+        error:
+          zibalError instanceof Error
+            ? zibalError.message
+            : zibalError,
+      });
 
       console.log(
-        '[request-payment] Marking order as failed because Zibal request failed',
+        '[PAYMENT_REQUEST] Marking order as failed because Zibal request failed',
         {
           orderId: order.id,
         },
@@ -491,7 +514,7 @@ export async function requestPayment(
       return;
     }
 
-    console.log('[request-payment] Zibal response received', {
+    console.log('[PAYMENT_REQUEST] Zibal response received', {
       orderId: order.id,
       result: zibal.result,
       trackId: zibal.trackId ?? null,
@@ -505,7 +528,7 @@ export async function requestPayment(
      */
 
     if (zibal.result !== 100 || !zibal.trackId) {
-      console.error('[request-payment] Zibal payment creation failed', {
+      console.error('[PAYMENT_REQUEST] Zibal payment creation failed', {
         orderId: order.id,
         result: zibal.result,
         trackId: zibal.trackId ?? null,
@@ -535,7 +558,7 @@ export async function requestPayment(
       return;
     }
 
-    console.log('[request-payment] Zibal payment created successfully', {
+    console.log('[PAYMENT_REQUEST] Zibal payment created successfully', {
       orderId: order.id,
       trackId: zibal.trackId,
     });
@@ -546,7 +569,7 @@ export async function requestPayment(
      * ------------------------------------------------------------
      */
 
-    console.log('[request-payment] Saving Zibal track ID', {
+    console.log('[PAYMENT_REQUEST] Saving Zibal track ID', {
       orderId: order.id,
       trackId: zibal.trackId,
     });
@@ -561,13 +584,14 @@ export async function requestPayment(
       .eq('id', order.id);
 
     if (trackUpdateError) {
+      console.error('[PAYMENT_REQUEST] Failed to update Zibal track ID');
       logSupabaseError(
         'save Zibal track ID',
         trackUpdateError,
       );
 
       console.error(
-        '[request-payment] Failed to save Zibal track ID',
+        '[PAYMENT_REQUEST] Track ID update context',
         {
           orderId: order.id,
           trackId: zibal.trackId,
@@ -582,7 +606,7 @@ export async function requestPayment(
     }
 
     console.log(
-      '[request-payment] Zibal track ID saved successfully',
+      '[PAYMENT_REQUEST] Zibal track ID saved successfully',
       {
         orderId: order.id,
         trackId: zibal.trackId,
@@ -597,7 +621,7 @@ export async function requestPayment(
 
     const paymentUrl = zibalStartUrl(zibal.trackId);
 
-    console.log('[request-payment] Payment URL generated', {
+    console.log('[PAYMENT_REQUEST] Payment URL generated', {
       orderId: order.id,
       trackId: zibal.trackId,
     });
@@ -610,7 +634,7 @@ export async function requestPayment(
 
     const durationMs = Date.now() - requestStartedAt;
 
-    console.log('[request-payment] Payment request completed successfully', {
+    console.log('[PAYMENT_REQUEST] Payment request completed', {
       orderId: order.id,
       trackId: zibal.trackId,
       totalAmount,
@@ -618,7 +642,7 @@ export async function requestPayment(
       durationMs,
     });
 
-    console.log('[request-payment] ========================================');
+    console.log('[PAYMENT_REQUEST] ========================================');
 
     res.status(200).json({
       orderId: order.id,
@@ -643,7 +667,7 @@ export async function requestPayment(
         ? err.stack
         : undefined;
 
-    console.error('[request-payment] Unexpected error', {
+    console.error('[PAYMENT_REQUEST] Unexpected error', {
       message: errorMessage,
       stack: errorStack,
       durationMs,
@@ -661,13 +685,13 @@ export async function requestPayment(
         ? 400
         : 500;
 
-    console.error('[request-payment] Returning error response', {
+    console.error('[PAYMENT_REQUEST] Returning error response', {
       code,
       status,
     });
 
     jsonError(res, code, status);
 
-    console.log('[request-payment] ========================================');
+    console.log('[PAYMENT_REQUEST] ========================================');
   }
 }
