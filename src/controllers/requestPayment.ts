@@ -93,6 +93,86 @@ function getErrorCode(error: unknown): string {
 
 /*
 |--------------------------------------------------------------------------
+| Helper: Generate order number
+|--------------------------------------------------------------------------
+|
+| Format:
+|
+| YYMMDDHHmmss
+|
+| Example:
+|
+| 05/05/20 14:37:46
+|       ↓
+| 050520143746
+|
+| The database currently stores order_number as BIGINT.
+| Therefore the value is returned as a number.
+|
+| Timezone is explicitly Asia/Tehran so the result does not
+| depend on the VPS/system timezone.
+|--------------------------------------------------------------------------
+*/
+
+function generateOrderNumber(): number {
+  const now = new Date();
+
+  const formatter = new Intl.DateTimeFormat(
+    'en-US',
+    {
+      timeZone: 'Asia/Tehran',
+      calendar: 'gregory',
+      numberingSystem: 'latn',
+      year: '2-digit',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    },
+  );
+
+  const parts = formatter.formatToParts(now);
+
+  const values: Record<string, string> = {};
+
+  for (const part of parts) {
+    if (part.type !== 'literal') {
+      values[part.type] = part.value;
+    }
+  }
+
+  const orderNumberString =
+    `${values.year}${values.month}${values.day}` +
+    `${values.hour}${values.minute}${values.second}`;
+
+  const orderNumber =
+    Number(orderNumberString);
+
+  if (
+    !Number.isSafeInteger(orderNumber) ||
+    orderNumber <= 0
+  ) {
+    throw new Error('invalid_order_number');
+  }
+
+  console.log(
+    '[PAYMENT_REQUEST] Generated order number',
+    {
+      orderNumber,
+      formatted:
+        orderNumberString,
+      timezone:
+        'Asia/Tehran',
+    },
+  );
+
+  return orderNumber;
+}
+
+/*
+|--------------------------------------------------------------------------
 | Main payment request controller
 |--------------------------------------------------------------------------
 */
@@ -118,14 +198,20 @@ export async function requestPayment(
     |--------------------------------------------------------------------------
     */
 
-    console.log('[PAYMENT_REQUEST] Request information', {
-      method: req.method,
-      path: req.originalUrl,
-      ip: req.ip,
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length'],
-      origin: req.headers.origin ?? null,
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Request information',
+      {
+        method: req.method,
+        path: req.originalUrl,
+        ip: req.ip,
+        contentType:
+          req.headers['content-type'],
+        contentLength:
+          req.headers['content-length'],
+        origin:
+          req.headers.origin ?? null,
+      },
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -137,24 +223,30 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Step 1: Checking environment configuration',
     );
 
-    const merchant = process.env.ZIBAL_MERCHANT;
+    const merchant =
+      process.env.ZIBAL_MERCHANT;
 
     if (!merchant) {
       console.error(
         '[PAYMENT_REQUEST] ZIBAL_MERCHANT is missing',
       );
 
-      throw new Error('config_error');
+      throw new Error(
+        'config_error',
+      );
     }
 
-    const backendUrl = process.env.BACKEND_URL;
+    const backendUrl =
+      process.env.BACKEND_URL;
 
     if (!backendUrl) {
       console.error(
         '[PAYMENT_REQUEST] BACKEND_URL is missing',
       );
 
-      throw new Error('config_error');
+      throw new Error(
+        'config_error',
+      );
     }
 
     const normalizedBackendUrl =
@@ -193,7 +285,10 @@ export async function requestPayment(
         })
       | undefined;
 
-    if (!body || typeof body !== 'object') {
+    if (
+      !body ||
+      typeof body !== 'object'
+    ) {
       console.error(
         '[PAYMENT_REQUEST] Request body is missing or invalid',
       );
@@ -210,12 +305,15 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Request body received',
       {
-        bodyType: typeof body,
-        keys: Object.keys(body),
+        bodyType:
+          typeof body,
+        keys:
+          Object.keys(body),
         hasCustomer:
           Boolean(body.customer) ||
           Boolean(body.customerDetails),
-        hasItems: Array.isArray(body.items),
+        hasItems:
+          Array.isArray(body.items),
         itemsCount:
           Array.isArray(body.items)
             ? body.items.length
@@ -251,7 +349,8 @@ export async function requestPayment(
       console.error(
         '[PAYMENT_REQUEST] Customer object not found',
         {
-          availableKeys: Object.keys(body),
+          availableKeys:
+            Object.keys(body),
         },
       );
 
@@ -267,17 +366,28 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Customer object detected',
       {
-        keys: Object.keys(customerInput),
+        keys:
+          Object.keys(customerInput),
+
         hasName:
-          typeof customerInput.name === 'string',
+          typeof customerInput.name ===
+          'string',
+
         hasPhone:
-          typeof customerInput.phone === 'string',
+          typeof customerInput.phone ===
+          'string',
+
         hasEmail:
-          typeof customerInput.email === 'string',
+          typeof customerInput.email ===
+          'string',
+
         hasAddress:
-          typeof customerInput.address === 'string',
+          typeof customerInput.address ===
+          'string',
+
         hasNote:
-          typeof customerInput.note === 'string',
+          typeof customerInput.note ===
+          'string',
       },
     );
 
@@ -285,10 +395,14 @@ export async function requestPayment(
 
     try {
       customerDetails =
-        validateCustomer(customerInput);
+        validateCustomer(
+          customerInput,
+        );
     } catch (validationError) {
       const code =
-        getErrorCode(validationError);
+        getErrorCode(
+          validationError,
+        );
 
       console.error(
         '[PAYMENT_REQUEST] Customer validation failed',
@@ -323,13 +437,17 @@ export async function requestPayment(
           ),
 
         emailProvided:
-          Boolean(customerDetails.email),
+          Boolean(
+            customerDetails.email,
+          ),
 
         addressLength:
           customerDetails.address.length,
 
         noteProvided:
-          Boolean(customerDetails.note),
+          Boolean(
+            customerDetails.note,
+          ),
       },
     );
 
@@ -343,7 +461,9 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Step 4: Validating order items',
     );
 
-    if (!Array.isArray(body.items)) {
+    if (
+      !Array.isArray(body.items)
+    ) {
       console.error(
         '[PAYMENT_REQUEST] items is not an array',
         {
@@ -364,7 +484,8 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Raw items received',
       {
-        count: body.items.length,
+        count:
+          body.items.length,
       },
     );
 
@@ -372,10 +493,14 @@ export async function requestPayment(
 
     try {
       lineItems =
-        normalizeOrderItems(body.items);
+        normalizeOrderItems(
+          body.items,
+        );
     } catch (validationError) {
       const code =
-        getErrorCode(validationError);
+        getErrorCode(
+          validationError,
+        );
 
       console.error(
         '[PAYMENT_REQUEST] Items validation failed',
@@ -396,11 +521,19 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Items validated successfully',
       {
-        itemCount: lineItems.length,
-        items: lineItems.map((item) => ({
-          productId: item.productId,
-          quantity: item.quantity,
-        })),
+        itemCount:
+          lineItems.length,
+
+        items:
+          lineItems.map(
+            (item) => ({
+              productId:
+                item.productId,
+
+              quantity:
+                item.quantity,
+            }),
+          ),
       },
     );
 
@@ -417,13 +550,17 @@ export async function requestPayment(
     let supabase;
 
     try {
-      supabase = getSupabaseAdmin();
-    } catch (supabaseInitError) {
+      supabase =
+        getSupabaseAdmin();
+    } catch (
+      supabaseInitError
+    ) {
       console.error(
         '[PAYMENT_REQUEST] Supabase initialization failed',
         {
           message:
-            supabaseInitError instanceof Error
+            supabaseInitError instanceof
+            Error
               ? supabaseInitError.message
               : supabaseInitError,
         },
@@ -450,7 +587,8 @@ export async function requestPayment(
 
     const productIds =
       lineItems.map(
-        (item) => item.productId,
+        (item) =>
+          item.productId,
       );
 
     console.log(
@@ -468,7 +606,10 @@ export async function requestPayment(
       .select(
         'id, model, goods_type, type, color, price, stock',
       )
-      .in('id', productIds);
+      .in(
+        'id',
+        productIds,
+      );
 
     if (productsError) {
       logSupabaseError(
@@ -504,6 +645,7 @@ export async function requestPayment(
       {
         requested:
           productIds.length,
+
         returned:
           products.length,
       },
@@ -518,10 +660,13 @@ export async function requestPayment(
         {
           requestedProductIds:
             productIds,
+
           returnedProductIds:
             products.map(
               (product) =>
-                Number(product.id),
+                Number(
+                  product.id,
+                ),
             ),
         },
       );
@@ -546,7 +691,10 @@ export async function requestPayment(
     );
 
     const productMap =
-      new Map<number, DbProduct>();
+      new Map<
+        number,
+        DbProduct
+      >();
 
     for (
       const product of
@@ -561,7 +709,8 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Product map created',
       {
-        count: productMap.size,
+        count:
+          productMap.size,
       },
     );
 
@@ -614,25 +763,34 @@ export async function requestPayment(
       }
 
       const unitPrice =
-        Number(product.price ?? 0);
+        Number(
+          product.price ?? 0,
+        );
 
       const stock =
-        Number(product.stock ?? 0);
+        Number(
+          product.stock ?? 0,
+        );
 
       console.log(
         '[PAYMENT_REQUEST] Product validation',
         {
           productId:
             line.productId,
+
           quantity:
             line.quantity,
+
           unitPrice,
+
           stock,
         },
       );
 
       if (
-        !Number.isFinite(unitPrice) ||
+        !Number.isFinite(
+          unitPrice,
+        ) ||
         unitPrice <= 0
       ) {
         console.error(
@@ -640,6 +798,7 @@ export async function requestPayment(
           {
             productId:
               line.productId,
+
             price:
               product.price,
           },
@@ -663,6 +822,7 @@ export async function requestPayment(
           {
             productId:
               line.productId,
+
             stock:
               product.stock,
           },
@@ -678,15 +838,18 @@ export async function requestPayment(
       }
 
       if (
-        stock < line.quantity
+        stock <
+        line.quantity
       ) {
         console.error(
           '[PAYMENT_REQUEST] Insufficient stock',
           {
             productId:
               line.productId,
+
             requested:
               line.quantity,
+
             available:
               stock,
           },
@@ -738,13 +901,16 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Order total calculated',
       {
         totalAmount,
+
         itemCount:
           orderItemsPayload.length,
       },
     );
 
     if (
-      !Number.isFinite(totalAmount) ||
+      !Number.isFinite(
+        totalAmount,
+      ) ||
       totalAmount <= 0
     ) {
       console.error(
@@ -765,12 +931,33 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 10. Create order
+    | 10. Generate order number
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 9: Creating order',
+      '[PAYMENT_REQUEST] Step 9: Generating order number',
+    );
+
+    const orderNumber =
+      generateOrderNumber();
+
+    console.log(
+      '[PAYMENT_REQUEST] Order number generated',
+      {
+        orderNumber,
+        totalAmount,
+      },
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 11. Create order
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 10: Creating order',
     );
 
     const {
@@ -779,6 +966,18 @@ export async function requestPayment(
     } = await supabase
       .from('orders')
       .insert({
+        /*
+         * Public/business order number.
+         *
+         * Format:
+         * YYMMDDHHmmss
+         *
+         * Example:
+         * 050520143746
+         */
+        order_number:
+          orderNumber,
+
         customer_name:
           customerDetails.name,
 
@@ -800,13 +999,23 @@ export async function requestPayment(
         status:
           'pending',
       })
-      .select('id')
+      .select(
+        'id, order_number',
+      )
       .single();
 
     if (orderError) {
       logSupabaseError(
         'orders insert',
         orderError,
+      );
+
+      console.error(
+        '[PAYMENT_REQUEST] Order creation failed',
+        {
+          orderNumber,
+          totalAmount,
+        },
       );
 
       jsonError(
@@ -818,9 +1027,23 @@ export async function requestPayment(
       return;
     }
 
-    if (!order?.id) {
+    if (
+      !order?.id ||
+      order.order_number ===
+        null ||
+      order.order_number ===
+        undefined
+    ) {
       console.error(
-        '[PAYMENT_REQUEST] Order created but ID is missing',
+        '[PAYMENT_REQUEST] Order created but ID/order number is missing',
+        {
+          orderId:
+            order?.id ?? null,
+
+          orderNumber:
+            order?.order_number ??
+            null,
+        },
       );
 
       jsonError(
@@ -835,22 +1058,29 @@ export async function requestPayment(
     const orderId =
       order.id;
 
+    const savedOrderNumber =
+      Number(
+        order.order_number,
+      );
+
     console.log(
       '[PAYMENT_REQUEST] Order created successfully',
       {
         orderId,
+        orderNumber:
+          savedOrderNumber,
         totalAmount,
       },
     );
 
     /*
     |--------------------------------------------------------------------------
-    | 11. Create order items
+    | 12. Create order items
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 10: Creating order items',
+      '[PAYMENT_REQUEST] Step 11: Creating order items',
     );
 
     const orderItems =
@@ -867,8 +1097,13 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Order items payload prepared',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         itemCount:
           orderItems.length,
+
         columns:
           Object.keys(
             orderItems[0] ?? {},
@@ -877,10 +1112,13 @@ export async function requestPayment(
     );
 
     const {
-      error: itemsError,
+      error:
+        itemsError,
     } = await supabase
       .from('order_items')
-      .insert(orderItems);
+      .insert(
+        orderItems,
+      );
 
     if (itemsError) {
       console.error(
@@ -902,15 +1140,22 @@ export async function requestPayment(
         '[PAYMENT_REQUEST] Rolling back order',
         {
           orderId,
+
+          orderNumber:
+            savedOrderNumber,
         },
       );
 
       const {
-        error: rollbackError,
+        error:
+          rollbackError,
       } = await supabase
         .from('orders')
         .delete()
-        .eq('id', orderId);
+        .eq(
+          'id',
+          orderId,
+        );
 
       if (rollbackError) {
         logSupabaseError(
@@ -922,6 +1167,9 @@ export async function requestPayment(
           '[PAYMENT_REQUEST] Order rollback successful',
           {
             orderId,
+
+            orderNumber:
+              savedOrderNumber,
           },
         );
       }
@@ -939,6 +1187,10 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Order items created successfully',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         itemCount:
           orderItems.length,
       },
@@ -946,12 +1198,12 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 12. Calculate Zibal amount
+    | 13. Calculate Zibal amount
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 11: Calculating Zibal amount',
+      '[PAYMENT_REQUEST] Step 12: Calculating Zibal amount',
     );
 
     /*
@@ -968,7 +1220,12 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Zibal amount calculated',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         totalAmount,
+
         amountRials,
       },
     );
@@ -983,6 +1240,11 @@ export async function requestPayment(
         '[PAYMENT_REQUEST] Invalid Zibal amount',
         {
           amountRials,
+
+          orderId,
+
+          orderNumber:
+            savedOrderNumber,
         },
       );
 
@@ -1008,15 +1270,20 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 13. Call Zibal
+    | 14. Call Zibal
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 12: Calling Zibal',
+      '[PAYMENT_REQUEST] Step 13: Calling Zibal',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         amountRials,
+
         callbackUrl,
       },
     );
@@ -1027,22 +1294,38 @@ export async function requestPayment(
       zibal =
         await zibalRequest({
           merchant,
+
           amount:
             amountRials,
+
           callbackUrl,
-          description:
-            `Order ${orderId}`,
+
+          /*
+           * Zibal continues to use the internal UUID
+           * as the technical transaction/order reference.
+           */
           orderId,
+
+          description:
+            `Order ${savedOrderNumber}`,
+
           mobile:
             customerDetails.phone,
         });
-    } catch (zibalError) {
+    } catch (
+      zibalError
+    ) {
       console.error(
         '[PAYMENT_REQUEST] Zibal request threw an exception',
         {
           orderId,
+
+          orderNumber:
+            savedOrderNumber,
+
           message:
-            zibalError instanceof Error
+            zibalError instanceof
+            Error
               ? zibalError.message
               : String(
                   zibalError,
@@ -1051,7 +1334,8 @@ export async function requestPayment(
       );
 
       const {
-        error: updateError,
+        error:
+          updateError,
       } = await supabase
         .from('orders')
         .update({
@@ -1082,11 +1366,17 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Zibal response received',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         result:
           zibal.result,
+
         trackId:
           zibal.trackId ??
           null,
+
         message:
           zibal.message ??
           null,
@@ -1095,7 +1385,7 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 14. Validate Zibal response
+    | 15. Validate Zibal response
     |--------------------------------------------------------------------------
     */
 
@@ -1107,11 +1397,17 @@ export async function requestPayment(
         '[PAYMENT_REQUEST] Zibal payment creation failed',
         {
           orderId,
+
+          orderNumber:
+            savedOrderNumber,
+
           result:
             zibal.result,
+
           trackId:
             zibal.trackId ??
             null,
+
           message:
             zibal.message ??
             null,
@@ -1119,7 +1415,8 @@ export async function requestPayment(
       );
 
       const {
-        error: updateError,
+        error:
+          updateError,
       } = await supabase
         .from('orders')
         .update({
@@ -1150,6 +1447,10 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Zibal payment created successfully',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         trackId:
           zibal.trackId,
       },
@@ -1157,12 +1458,12 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 15. Save Zibal track ID
+    | 16. Save Zibal track ID
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 13: Saving Zibal track ID',
+      '[PAYMENT_REQUEST] Step 14: Saving Zibal track ID',
     );
 
     const {
@@ -1214,6 +1515,10 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Zibal track ID saved',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         trackId:
           zibal.trackId,
       },
@@ -1221,12 +1526,12 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 16. Generate payment URL
+    | 17. Generate payment URL
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      '[PAYMENT_REQUEST] Step 14: Generating payment URL',
+      '[PAYMENT_REQUEST] Step 15: Generating payment URL',
     );
 
     const paymentUrl =
@@ -1238,6 +1543,10 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Payment URL generated',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         trackId:
           zibal.trackId,
       },
@@ -1245,7 +1554,7 @@ export async function requestPayment(
 
     /*
     |--------------------------------------------------------------------------
-    | 17. Successful response
+    | 18. Successful response
     |--------------------------------------------------------------------------
     */
 
@@ -1257,10 +1566,17 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Payment request completed successfully',
       {
         orderId,
+
+        orderNumber:
+          savedOrderNumber,
+
         trackId:
           zibal.trackId,
+
         totalAmount,
+
         amountRials,
+
         durationMs,
       },
     );
@@ -1270,15 +1586,19 @@ export async function requestPayment(
     );
 
     res.status(200).json({
+      /*
+       * Internal database identifier.
+       */
       orderId,
 
       /*
-       * Current orders table does NOT contain order_number.
-       * Therefore order ID is used as order reference.
+       * Public/business order number.
+       *
+       * Format:
+       * YYMMDDHHmmss
        */
-
       orderNumber:
-        orderId,
+        savedOrderNumber,
 
       trackId:
         zibal.trackId,
@@ -1335,7 +1655,9 @@ export async function requestPayment(
      */
 
     const isClientError =
-      code.startsWith('invalid_') ||
+      code.startsWith(
+        'invalid_',
+      ) ||
       code ===
         'insufficient_stock' ||
       code ===
@@ -1350,7 +1672,9 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Returning error response',
       {
         code,
+
         status,
+
         durationMs,
       },
     );
