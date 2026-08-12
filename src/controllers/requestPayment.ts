@@ -1,44 +1,101 @@
 import type { Request, Response } from 'express';
+
 import { getSupabaseAdmin } from '../lib/supabase.js';
 import { zibalRequest, zibalStartUrl } from '../services/zibal.js';
+
 import {
   clientErrorMessage,
   normalizeOrderItems,
   validateCustomer,
 } from '../services/orderValidation.js';
-import type { DbProduct, RequestPaymentBody } from '../types/payment.js';
 
-function jsonError(res: Response, code: string, status: number): void {
+import type {
+  DbProduct,
+  RequestPaymentBody,
+} from '../types/payment.js';
+
+/*
+|--------------------------------------------------------------------------
+| Helper: JSON error response
+|--------------------------------------------------------------------------
+*/
+
+function jsonError(
+  res: Response,
+  code: string,
+  status: number,
+): void {
   console.error('[PAYMENT_REQUEST] Sending error response', {
     code,
     status,
+    message: clientErrorMessage(code),
   });
+
+  if (res.headersSent) {
+    console.error(
+      '[PAYMENT_REQUEST] WARNING: headers already sent',
+    );
+
+    return;
+  }
 
   res.status(status).json({
     error: clientErrorMessage(code),
   });
 }
 
+/*
+|--------------------------------------------------------------------------
+| Helper: Supabase error logger
+|--------------------------------------------------------------------------
+*/
+
 function logSupabaseError(
   stage: string,
-  error: {
-    message?: string;
-    details?: string;
-    hint?: string;
-    code?: string;
-  } | null | undefined,
+  error:
+    | {
+        message?: string;
+        details?: string;
+        hint?: string;
+        code?: string;
+      }
+    | null
+    | undefined,
 ): void {
   if (!error) {
     return;
   }
 
-  console.error(`[PAYMENT_REQUEST] Supabase error at ${stage}`, {
-    message: error.message,
-    details: error.details,
-    hint: error.hint,
-    code: error.code,
-  });
+  console.error(
+    `[PAYMENT_REQUEST] Supabase error at ${stage}`,
+    {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code,
+    },
+  );
 }
+
+/*
+|--------------------------------------------------------------------------
+| Helper: Error code extraction
+|--------------------------------------------------------------------------
+*/
+
+function getErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'invalid_order';
+}
+
+/*
+|--------------------------------------------------------------------------
+| Main payment request controller
+|--------------------------------------------------------------------------
+*/
 
 export async function requestPayment(
   req: Request,
@@ -46,26 +103,45 @@ export async function requestPayment(
 ): Promise<void> {
   const requestStartedAt = Date.now();
 
-  console.log('[PAYMENT_REQUEST] ========================================');
-  console.log('[PAYMENT_REQUEST] Payment request started');
-  console.log('[PAYMENT_REQUEST] Method:', req.method);
-  console.log('[PAYMENT_REQUEST] Path:', req.originalUrl);
-  console.log('[PAYMENT_REQUEST] IP:', req.ip);
+  console.log('');
+  console.log(
+    '[PAYMENT_REQUEST] ========================================',
+  );
+  console.log(
+    '[PAYMENT_REQUEST] Payment request started',
+  );
 
   try {
     /*
-     * ------------------------------------------------------------
-     * 1. Validate environment
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 1. Request information
+    |--------------------------------------------------------------------------
+    */
 
-    console.log('[PAYMENT_REQUEST] Checking environment configuration');
+    console.log('[PAYMENT_REQUEST] Request information', {
+      method: req.method,
+      path: req.originalUrl,
+      ip: req.ip,
+      contentType: req.headers['content-type'],
+      contentLength: req.headers['content-length'],
+      origin: req.headers.origin ?? null,
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | 2. Environment configuration
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 1: Checking environment configuration',
+    );
 
     const merchant = process.env.ZIBAL_MERCHANT;
 
     if (!merchant) {
       console.error(
-        '[PAYMENT_REQUEST] Configuration error: ZIBAL_MERCHANT is not configured',
+        '[PAYMENT_REQUEST] ZIBAL_MERCHANT is missing',
       );
 
       throw new Error('config_error');
@@ -75,255 +151,627 @@ export async function requestPayment(
 
     if (!backendUrl) {
       console.error(
-        '[PAYMENT_REQUEST] Configuration error: BACKEND_URL is not configured',
+        '[PAYMENT_REQUEST] BACKEND_URL is missing',
       );
 
       throw new Error('config_error');
     }
 
-    const normalizedBackendUrl = backendUrl.replace(/\/+$/, '');
-    const callbackUrl = `${normalizedBackendUrl}/api/payment/verify`;
+    const normalizedBackendUrl =
+      backendUrl.replace(/\/+$/, '');
 
-    console.log('[PAYMENT_REQUEST] Environment configuration is valid');
-    console.log('[PAYMENT_REQUEST] Callback URL:', callbackUrl);
+    const callbackUrl =
+      `${normalizedBackendUrl}/api/payment/verify`;
+
+    console.log(
+      '[PAYMENT_REQUEST] Environment configuration is valid',
+    );
+
+    console.log(
+      '[PAYMENT_REQUEST] Backend URL:',
+      normalizedBackendUrl,
+    );
+
+    console.log(
+      '[PAYMENT_REQUEST] Callback URL:',
+      callbackUrl,
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 2. Read and validate request body
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 3. Request body
+    |--------------------------------------------------------------------------
+    */
 
-    console.log('[PAYMENT_REQUEST] Validating request body');
+    console.log(
+      '[PAYMENT_REQUEST] Step 2: Reading request body',
+    );
 
-    console.log('[PAYMENT_REQUEST] Request received');
+    const body = req.body as
+      | (RequestPaymentBody & {
+          customerDetails?: RequestPaymentBody['customer'];
+        })
+      | undefined;
 
-    const body = req.body as RequestPaymentBody & {
-      customerDetails?: RequestPaymentBody['customer'];
-    };
+    if (!body || typeof body !== 'object') {
+      console.error(
+        '[PAYMENT_REQUEST] Request body is missing or invalid',
+      );
 
-    if (!body) {
-      console.error('[PAYMENT_REQUEST] Request body is missing');
+      jsonError(
+        res,
+        'invalid_order',
+        400,
+      );
 
-      jsonError(res, 'invalid_order', 400);
       return;
     }
 
+    console.log(
+      '[PAYMENT_REQUEST] Request body received',
+      {
+        bodyType: typeof body,
+        keys: Object.keys(body),
+        hasCustomer:
+          Boolean(body.customer) ||
+          Boolean(body.customerDetails),
+        hasItems: Array.isArray(body.items),
+        itemsCount:
+          Array.isArray(body.items)
+            ? body.items.length
+            : 0,
+      },
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 4. Customer validation
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 3: Validating customer',
+    );
+
+    /*
+     * Support both:
+     *
+     * customer: {...}
+     *
+     * and the temporary legacy:
+     *
+     * customerDetails: {...}
+     */
+
     const customerInput =
-      body.customer ?? body.customerDetails;
+      body.customer ??
+      body.customerDetails;
+
+    if (!customerInput) {
+      console.error(
+        '[PAYMENT_REQUEST] Customer object not found',
+        {
+          availableKeys: Object.keys(body),
+        },
+      );
+
+      jsonError(
+        res,
+        'invalid_customer',
+        400,
+      );
+
+      return;
+    }
+
+    console.log(
+      '[PAYMENT_REQUEST] Customer object detected',
+      {
+        keys: Object.keys(customerInput),
+        hasName:
+          typeof customerInput.name === 'string',
+        hasPhone:
+          typeof customerInput.phone === 'string',
+        hasEmail:
+          typeof customerInput.email === 'string',
+        hasAddress:
+          typeof customerInput.address === 'string',
+        hasNote:
+          typeof customerInput.note === 'string',
+      },
+    );
 
     let customerDetails;
 
     try {
-      customerDetails = validateCustomer(customerInput);
+      customerDetails =
+        validateCustomer(customerInput);
     } catch (validationError) {
-      console.error('[PAYMENT_REQUEST] Validation failed', {
-        step: 'customer',
-        code:
-          validationError instanceof Error
-            ? validationError.message
-            : 'invalid_customer',
-      });
+      const code =
+        getErrorCode(validationError);
 
-      throw validationError;
+      console.error(
+        '[PAYMENT_REQUEST] Customer validation failed',
+        {
+          code,
+        },
+      );
+
+      jsonError(
+        res,
+        code,
+        400,
+      );
+
+      return;
     }
 
-    console.log('[PAYMENT_REQUEST] Customer validated');
+    /*
+     * Do NOT log the complete customer object.
+     * It contains personal information.
+     */
+
+    console.log(
+      '[PAYMENT_REQUEST] Customer validated successfully',
+      {
+        nameLength:
+          customerDetails.name.length,
+
+        phoneValid:
+          /^09\d{9}$/.test(
+            customerDetails.phone,
+          ),
+
+        emailProvided:
+          Boolean(customerDetails.email),
+
+        addressLength:
+          customerDetails.address.length,
+
+        noteProvided:
+          Boolean(customerDetails.note),
+      },
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 5. Order items validation
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 4: Validating order items',
+    );
+
+    if (!Array.isArray(body.items)) {
+      console.error(
+        '[PAYMENT_REQUEST] items is not an array',
+        {
+          receivedType:
+            typeof body.items,
+        },
+      );
+
+      jsonError(
+        res,
+        'invalid_items',
+        400,
+      );
+
+      return;
+    }
+
+    console.log(
+      '[PAYMENT_REQUEST] Raw items received',
+      {
+        count: body.items.length,
+      },
+    );
 
     let lineItems;
 
     try {
-      lineItems = normalizeOrderItems(body.items);
+      lineItems =
+        normalizeOrderItems(body.items);
     } catch (validationError) {
-      console.error('[PAYMENT_REQUEST] Validation failed', {
-        step: 'items',
-        code:
-          validationError instanceof Error
-            ? validationError.message
-            : 'invalid_items',
-      });
+      const code =
+        getErrorCode(validationError);
 
-      throw validationError;
+      console.error(
+        '[PAYMENT_REQUEST] Items validation failed',
+        {
+          code,
+        },
+      );
+
+      jsonError(
+        res,
+        code,
+        400,
+      );
+
+      return;
     }
 
-    console.log('[PAYMENT_REQUEST] Items validated', {
-      itemCount: lineItems.length,
-      items: lineItems.map((item) => ({
-        productId: item.productId,
-        quantity: item.quantity,
-      })),
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Items validated successfully',
+      {
+        itemCount: lineItems.length,
+        items: lineItems.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 3. Initialize Supabase
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 6. Initialize Supabase
+    |--------------------------------------------------------------------------
+    */
 
-    console.log('[PAYMENT_REQUEST] Initializing Supabase admin client');
+    console.log(
+      '[PAYMENT_REQUEST] Step 5: Initializing Supabase',
+    );
 
-    const supabase = getSupabaseAdmin();
+    let supabase;
 
-    console.log('[PAYMENT_REQUEST] Supabase admin client initialized');
+    try {
+      supabase = getSupabaseAdmin();
+    } catch (supabaseInitError) {
+      console.error(
+        '[PAYMENT_REQUEST] Supabase initialization failed',
+        {
+          message:
+            supabaseInitError instanceof Error
+              ? supabaseInitError.message
+              : supabaseInitError,
+        },
+      );
+
+      throw new Error(
+        'supabase_config_error',
+      );
+    }
+
+    console.log(
+      '[PAYMENT_REQUEST] Supabase admin client initialized',
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 4. Fetch products
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 7. Fetch products
+    |--------------------------------------------------------------------------
+    */
 
-    const productIds = lineItems.map((item) => item.productId);
+    console.log(
+      '[PAYMENT_REQUEST] Step 6: Fetching products',
+    );
 
-    console.log('[PAYMENT_REQUEST] Fetching products', {
-      productIds,
-    });
+    const productIds =
+      lineItems.map(
+        (item) => item.productId,
+      );
+
+    console.log(
+      '[PAYMENT_REQUEST] Product IDs',
+      {
+        productIds,
+      },
+    );
 
     const {
       data: products,
       error: productsError,
     } = await supabase
       .from('products')
-      .select('id, model, goods_type, type, color, price, stock')
+      .select(
+        'id, model, goods_type, type, color, price, stock',
+      )
       .in('id', productIds);
 
     if (productsError) {
-      console.error('[PAYMENT_REQUEST] Product query failed');
-      logSupabaseError('products fetch', productsError);
+      logSupabaseError(
+        'products fetch',
+        productsError,
+      );
 
-      jsonError(res, 'product_not_found', 400);
+      jsonError(
+        res,
+        'product_not_found',
+        400,
+      );
+
       return;
     }
 
-    if (!products || products.length === 0) {
-      console.error('[PAYMENT_REQUEST] No products found', {
-        productIds,
-      });
+    if (!products) {
+      console.error(
+        '[PAYMENT_REQUEST] Products query returned null',
+      );
 
-      jsonError(res, 'product_not_found', 400);
+      jsonError(
+        res,
+        'product_not_found',
+        400,
+      );
+
       return;
     }
 
-    console.log('[PAYMENT_REQUEST] Products loaded', {
-      count: products.length,
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Products query completed',
+      {
+        requested:
+          productIds.length,
+        returned:
+          products.length,
+      },
+    );
 
-    /*
-     * ------------------------------------------------------------
-     * 5. Build product map
-     * ------------------------------------------------------------
-     */
+    if (
+      products.length !==
+      productIds.length
+    ) {
+      console.error(
+        '[PAYMENT_REQUEST] Not all requested products were found',
+        {
+          requestedProductIds:
+            productIds,
+          returnedProductIds:
+            products.map(
+              (product) =>
+                Number(product.id),
+            ),
+        },
+      );
 
-    const productMap = new Map<number, DbProduct>();
+      jsonError(
+        res,
+        'product_not_found',
+        400,
+      );
 
-    for (const product of products as DbProduct[]) {
-      productMap.set(Number(product.id), product);
+      return;
     }
 
-    console.log('[PAYMENT_REQUEST] Product map created', {
-      count: productMap.size,
-    });
+    /*
+    |--------------------------------------------------------------------------
+    | 8. Build product map
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 7: Building product map',
+    );
+
+    const productMap =
+      new Map<number, DbProduct>();
+
+    for (
+      const product of
+      products as DbProduct[]
+    ) {
+      productMap.set(
+        Number(product.id),
+        product,
+      );
+    }
+
+    console.log(
+      '[PAYMENT_REQUEST] Product map created',
+      {
+        count: productMap.size,
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 6. Validate stock and calculate total
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 9. Validate stock and calculate total
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 8: Validating stock and calculating total',
+    );
 
     let totalAmount = 0;
 
-    const orderItemsPayload: Array<{
-      product_id: number;
-      product_model: string;
-      product_goods_type: string;
-      product_color: string;
-      quantity: number;
-      unit_price: number;
-    }> = [];
+    const orderItemsPayload:
+      Array<{
+        product_id: number;
+        product_model: string;
+        product_goods_type: string;
+        product_color: string;
+        quantity: number;
+        unit_price: number;
+      }> = [];
 
-    console.log('[PAYMENT_REQUEST] Validating order items');
-
-    for (const line of lineItems) {
-      const product = productMap.get(line.productId);
+    for (
+      const line of lineItems
+    ) {
+      const product =
+        productMap.get(
+          line.productId,
+        );
 
       if (!product) {
-        console.error('[PAYMENT_REQUEST] Product not found', {
-          productId: line.productId,
-        });
+        console.error(
+          '[PAYMENT_REQUEST] Product missing from map',
+          {
+            productId:
+              line.productId,
+          },
+        );
 
-        jsonError(res, 'product_not_found', 400);
+        jsonError(
+          res,
+          'product_not_found',
+          400,
+        );
+
         return;
       }
 
-      const unitPrice = Number(product.price ?? 0);
-      const stock = Number(product.stock ?? 0);
+      const unitPrice =
+        Number(product.price ?? 0);
 
-      console.log('[PAYMENT_REQUEST] Product validation', {
-        productId: line.productId,
-        quantity: line.quantity,
-        unitPrice,
-        stock,
-      });
+      const stock =
+        Number(product.stock ?? 0);
 
-      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
-        console.error('[PAYMENT_REQUEST] Invalid product price', {
-          productId: line.productId,
-          price: product.price,
-        });
+      console.log(
+        '[PAYMENT_REQUEST] Product validation',
+        {
+          productId:
+            line.productId,
+          quantity:
+            line.quantity,
+          unitPrice,
+          stock,
+        },
+      );
 
-        jsonError(res, 'invalid_order', 400);
+      if (
+        !Number.isFinite(unitPrice) ||
+        unitPrice <= 0
+      ) {
+        console.error(
+          '[PAYMENT_REQUEST] Invalid product price',
+          {
+            productId:
+              line.productId,
+            price:
+              product.price,
+          },
+        );
+
+        jsonError(
+          res,
+          'invalid_order',
+          400,
+        );
+
         return;
       }
 
-      if (stock < line.quantity) {
-        console.error('[PAYMENT_REQUEST] Insufficient stock', {
-          productId: line.productId,
-          requested: line.quantity,
-          available: stock,
-        });
+      if (
+        !Number.isFinite(stock) ||
+        stock < 0
+      ) {
+        console.error(
+          '[PAYMENT_REQUEST] Invalid product stock',
+          {
+            productId:
+              line.productId,
+            stock:
+              product.stock,
+          },
+        );
 
-        jsonError(res, 'insufficient_stock', 400);
+        jsonError(
+          res,
+          'invalid_order',
+          400,
+        );
+
         return;
       }
 
-      totalAmount += unitPrice * line.quantity;
+      if (
+        stock < line.quantity
+      ) {
+        console.error(
+          '[PAYMENT_REQUEST] Insufficient stock',
+          {
+            productId:
+              line.productId,
+            requested:
+              line.quantity,
+            available:
+              stock,
+          },
+        );
+
+        jsonError(
+          res,
+          'insufficient_stock',
+          400,
+        );
+
+        return;
+      }
+
+      totalAmount +=
+        unitPrice *
+        line.quantity;
 
       orderItemsPayload.push({
-        product_id: line.productId,
-        product_model: String(product.model ?? ''),
-        product_goods_type: String(
-          product.goods_type || product.type || '',
-        ),
-        product_color: String(product.color ?? ''),
-        quantity: line.quantity,
-        unit_price: unitPrice,
+        product_id:
+          line.productId,
+
+        product_model:
+          String(
+            product.model ?? '',
+          ),
+
+        product_goods_type:
+          String(
+            product.goods_type ??
+              product.type ??
+              '',
+          ),
+
+        product_color:
+          String(
+            product.color ?? '',
+          ),
+
+        quantity:
+          line.quantity,
+
+        unit_price:
+          unitPrice,
       });
     }
 
-    console.log('[PAYMENT_REQUEST] Total calculated', {
-      totalAmount,
-      itemCount: orderItemsPayload.length,
-    });
-
-    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-      console.error('[PAYMENT_REQUEST] Invalid calculated order total', {
+    console.log(
+      '[PAYMENT_REQUEST] Order total calculated',
+      {
         totalAmount,
-      });
+        itemCount:
+          orderItemsPayload.length,
+      },
+    );
 
-      jsonError(res, 'invalid_items', 400);
+    if (
+      !Number.isFinite(totalAmount) ||
+      totalAmount <= 0
+    ) {
+      console.error(
+        '[PAYMENT_REQUEST] Invalid order total',
+        {
+          totalAmount,
+        },
+      );
+
+      jsonError(
+        res,
+        'invalid_order',
+        400,
+      );
+
       return;
     }
 
     /*
-     * ------------------------------------------------------------
-     * 7. Insert order
-     * ------------------------------------------------------------
-     *
-     * IMPORTANT:
-     * The current database schema does NOT contain order_number.
-     * Therefore we only select the existing id column.
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 10. Create order
+    |--------------------------------------------------------------------------
+    */
 
-    console.log('[PAYMENT_REQUEST] Creating order in database');
+    console.log(
+      '[PAYMENT_REQUEST] Step 9: Creating order',
+    );
 
     const {
       data: order,
@@ -331,54 +779,102 @@ export async function requestPayment(
     } = await supabase
       .from('orders')
       .insert({
-        customer_name: customerDetails.name,
-        customer_phone: customerDetails.phone,
-        customer_email: customerDetails.email ?? '',
-        customer_address: customerDetails.address,
-        customer_note: customerDetails.note ?? '',
-        total_amount: totalAmount,
-        status: 'pending',
+        customer_name:
+          customerDetails.name,
+
+        customer_phone:
+          customerDetails.phone,
+
+        customer_email:
+          customerDetails.email ?? '',
+
+        customer_address:
+          customerDetails.address,
+
+        customer_note:
+          customerDetails.note ?? '',
+
+        total_amount:
+          totalAmount,
+
+        status:
+          'pending',
       })
       .select('id')
       .single();
 
     if (orderError) {
-      console.error('[PAYMENT_REQUEST] Order insert failed');
-      logSupabaseError('order insert', orderError);
-
-      jsonError(res, 'invalid_order', 500);
-      return;
-    }
-
-    if (!order) {
-      console.error(
-        '[PAYMENT_REQUEST] Order creation returned no order data',
+      logSupabaseError(
+        'orders insert',
+        orderError,
       );
 
-      jsonError(res, 'invalid_order', 500);
+      jsonError(
+        res,
+        'invalid_order',
+        500,
+      );
+
       return;
     }
 
-    console.log('[PAYMENT_REQUEST] Order created', {
-      orderId: order.id,
-      totalAmount,
-    });
+    if (!order?.id) {
+      console.error(
+        '[PAYMENT_REQUEST] Order created but ID is missing',
+      );
+
+      jsonError(
+        res,
+        'invalid_order',
+        500,
+      );
+
+      return;
+    }
+
+    const orderId =
+      order.id;
+
+    console.log(
+      '[PAYMENT_REQUEST] Order created successfully',
+      {
+        orderId,
+        totalAmount,
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 8. Insert order items
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 11. Create order items
+    |--------------------------------------------------------------------------
+    */
 
-    const orderItems = orderItemsPayload.map((item) => ({
-      order_id: order.id,
-      ...item,
-    }));
+    console.log(
+      '[PAYMENT_REQUEST] Step 10: Creating order items',
+    );
 
-    console.log('[PAYMENT_REQUEST] Creating order items', {
-      orderId: order.id,
-      itemCount: orderItems.length,
-    });
+    const orderItems =
+      orderItemsPayload.map(
+        (item) => ({
+          order_id:
+            orderId,
+
+          ...item,
+        }),
+      );
+
+    console.log(
+      '[PAYMENT_REQUEST] Order items payload prepared',
+      {
+        orderId,
+        itemCount:
+          orderItems.length,
+        columns:
+          Object.keys(
+            orderItems[0] ?? {},
+          ),
+      },
+    );
 
     const {
       error: itemsError,
@@ -387,107 +883,170 @@ export async function requestPayment(
       .insert(orderItems);
 
     if (itemsError) {
-      console.error('[PAYMENT_REQUEST] Order items insert failed');
-      logSupabaseError('order_items insert', itemsError);
-
       console.error(
-        '[PAYMENT_REQUEST] Order items creation failed',
-        {
-          orderId: order.id,
-        },
+        '[PAYMENT_REQUEST] order_items INSERT FAILED',
       );
 
+      logSupabaseError(
+        'order_items insert',
+        itemsError,
+      );
+
+      /*
+      |--------------------------------------------------------------------------
+      | Rollback order
+      |--------------------------------------------------------------------------
+      */
+
       console.log(
-        '[PAYMENT_REQUEST] Attempting to delete incomplete order',
+        '[PAYMENT_REQUEST] Rolling back order',
         {
-          orderId: order.id,
+          orderId,
         },
       );
 
       const {
-        error: deleteOrderError,
+        error: rollbackError,
       } = await supabase
         .from('orders')
         .delete()
-        .eq('id', order.id);
+        .eq('id', orderId);
 
-      if (deleteOrderError) {
+      if (rollbackError) {
         logSupabaseError(
-          'rollback order after order_items failure',
-          deleteOrderError,
+          'order rollback',
+          rollbackError,
         );
       } else {
         console.log(
-          '[PAYMENT_REQUEST] Incomplete order successfully rolled back',
+          '[PAYMENT_REQUEST] Order rollback successful',
           {
-            orderId: order.id,
+            orderId,
           },
         );
       }
 
-      jsonError(res, 'invalid_order', 500);
+      jsonError(
+        res,
+        'invalid_order',
+        500,
+      );
+
       return;
     }
 
-    console.log('[PAYMENT_REQUEST] Order items created', {
-      orderId: order.id,
-      itemCount: orderItems.length,
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Order items created successfully',
+      {
+        orderId,
+        itemCount:
+          orderItems.length,
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 9. Calculate Zibal amount
-     * ------------------------------------------------------------
-     *
-     * The database stores the product price in the current
-     * application unit. Zibal expects Rials.
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 12. Calculate Zibal amount
+    |--------------------------------------------------------------------------
+    */
 
-    const amountRials = Math.round(totalAmount * 10);
-
-    console.log('[PAYMENT_REQUEST] Payment amount calculated', {
-      orderId: order.id,
-      totalAmount,
-      amountRials,
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Step 11: Calculating Zibal amount',
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 10. Create Zibal payment request
-     * ------------------------------------------------------------
+     * Application/database price is assumed to be Toman.
+     * Zibal expects Rial.
      */
 
-    console.log('[PAYMENT_REQUEST] Calling Zibal', {
-      orderId: order.id,
-      amountRials,
-      callbackUrl,
-    });
+    const amountRials =
+      Math.round(
+        totalAmount * 10,
+      );
+
+    console.log(
+      '[PAYMENT_REQUEST] Zibal amount calculated',
+      {
+        orderId,
+        totalAmount,
+        amountRials,
+      },
+    );
+
+    if (
+      !Number.isFinite(
+        amountRials,
+      ) ||
+      amountRials <= 0
+    ) {
+      console.error(
+        '[PAYMENT_REQUEST] Invalid Zibal amount',
+        {
+          amountRials,
+        },
+      );
+
+      await supabase
+        .from('orders')
+        .update({
+          status:
+            'failed',
+        })
+        .eq(
+          'id',
+          orderId,
+        );
+
+      jsonError(
+        res,
+        'invalid_order',
+        500,
+      );
+
+      return;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 13. Call Zibal
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      '[PAYMENT_REQUEST] Step 12: Calling Zibal',
+      {
+        orderId,
+        amountRials,
+        callbackUrl,
+      },
+    );
 
     let zibal;
 
     try {
-      zibal = await zibalRequest({
-        merchant,
-        amount: amountRials,
-        callbackUrl,
-        description: `Order ${order.id}`,
-        orderId: order.id,
-        mobile: customerDetails.phone,
-      });
+      zibal =
+        await zibalRequest({
+          merchant,
+          amount:
+            amountRials,
+          callbackUrl,
+          description:
+            `Order ${orderId}`,
+          orderId,
+          mobile:
+            customerDetails.phone,
+        });
     } catch (zibalError) {
-      console.error('[PAYMENT_REQUEST] Zibal request failed', {
-        orderId: order.id,
-        error:
-          zibalError instanceof Error
-            ? zibalError.message
-            : zibalError,
-      });
-
-      console.log(
-        '[PAYMENT_REQUEST] Marking order as failed because Zibal request failed',
+      console.error(
+        '[PAYMENT_REQUEST] Zibal request threw an exception',
         {
-          orderId: order.id,
+          orderId,
+          message:
+            zibalError instanceof Error
+              ? zibalError.message
+              : String(
+                  zibalError,
+                ),
         },
       );
 
@@ -496,9 +1055,13 @@ export async function requestPayment(
       } = await supabase
         .from('orders')
         .update({
-          status: 'failed',
+          status:
+            'failed',
         })
-        .eq('id', order.id);
+        .eq(
+          'id',
+          orderId,
+        );
 
       if (updateError) {
         logSupabaseError(
@@ -508,41 +1071,65 @@ export async function requestPayment(
       }
 
       res.status(502).json({
-        error: 'Payment gateway request failed. Please try again.',
+        error:
+          'Payment gateway request failed. Please try again.',
       });
 
       return;
     }
 
-    console.log('[PAYMENT_REQUEST] Zibal response received', {
-      orderId: order.id,
-      result: zibal.result,
-      trackId: zibal.trackId ?? null,
-      message: zibal.message ?? null,
-    });
+    console.log(
+      '[PAYMENT_REQUEST] Zibal response received',
+      {
+        orderId,
+        result:
+          zibal.result,
+        trackId:
+          zibal.trackId ??
+          null,
+        message:
+          zibal.message ??
+          null,
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 11. Validate Zibal response
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 14. Validate Zibal response
+    |--------------------------------------------------------------------------
+    */
 
-    if (zibal.result !== 100 || !zibal.trackId) {
-      console.error('[PAYMENT_REQUEST] Zibal payment creation failed', {
-        orderId: order.id,
-        result: zibal.result,
-        trackId: zibal.trackId ?? null,
-        message: zibal.message ?? null,
-      });
+    if (
+      zibal.result !== 100 ||
+      !zibal.trackId
+    ) {
+      console.error(
+        '[PAYMENT_REQUEST] Zibal payment creation failed',
+        {
+          orderId,
+          result:
+            zibal.result,
+          trackId:
+            zibal.trackId ??
+            null,
+          message:
+            zibal.message ??
+            null,
+        },
+      );
 
       const {
         error: updateError,
       } = await supabase
         .from('orders')
         .update({
-          status: 'failed',
+          status:
+            'failed',
         })
-        .eq('id', order.id);
+        .eq(
+          'id',
+          orderId,
+        );
 
       if (updateError) {
         logSupabaseError(
@@ -552,110 +1139,162 @@ export async function requestPayment(
       }
 
       res.status(502).json({
-        error: 'Failed to create payment transaction. Please try again.',
-      });
-
-      return;
-    }
-
-    console.log('[PAYMENT_REQUEST] Zibal payment created successfully', {
-      orderId: order.id,
-      trackId: zibal.trackId,
-    });
-
-    /*
-     * ------------------------------------------------------------
-     * 12. Save Zibal track ID
-     * ------------------------------------------------------------
-     */
-
-    console.log('[PAYMENT_REQUEST] Saving Zibal track ID', {
-      orderId: order.id,
-      trackId: zibal.trackId,
-    });
-
-    const {
-      error: trackUpdateError,
-    } = await supabase
-      .from('orders')
-      .update({
-        zibal_track_id: zibal.trackId,
-      })
-      .eq('id', order.id);
-
-    if (trackUpdateError) {
-      console.error('[PAYMENT_REQUEST] Failed to update Zibal track ID');
-      logSupabaseError(
-        'save Zibal track ID',
-        trackUpdateError,
-      );
-
-      console.error(
-        '[PAYMENT_REQUEST] Track ID update context',
-        {
-          orderId: order.id,
-          trackId: zibal.trackId,
-        },
-      );
-
-      res.status(500).json({
-        error: 'Failed to save payment transaction. Please try again.',
+        error:
+          'Failed to create payment transaction. Please try again.',
       });
 
       return;
     }
 
     console.log(
-      '[PAYMENT_REQUEST] Zibal track ID saved successfully',
+      '[PAYMENT_REQUEST] Zibal payment created successfully',
       {
-        orderId: order.id,
-        trackId: zibal.trackId,
+        orderId,
+        trackId:
+          zibal.trackId,
       },
     );
 
     /*
-     * ------------------------------------------------------------
-     * 13. Build payment URL
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 15. Save Zibal track ID
+    |--------------------------------------------------------------------------
+    */
 
-    const paymentUrl = zibalStartUrl(zibal.trackId);
+    console.log(
+      '[PAYMENT_REQUEST] Step 13: Saving Zibal track ID',
+    );
 
-    console.log('[PAYMENT_REQUEST] Payment URL generated', {
-      orderId: order.id,
-      trackId: zibal.trackId,
-    });
+    const {
+      error:
+        trackUpdateError,
+    } = await supabase
+      .from('orders')
+      .update({
+        zibal_track_id:
+          zibal.trackId,
+      })
+      .eq(
+        'id',
+        orderId,
+      );
+
+    if (trackUpdateError) {
+      logSupabaseError(
+        'save Zibal track ID',
+        trackUpdateError,
+      );
+
+      /*
+      |--------------------------------------------------------------------------
+      | Mark order as failed
+      |--------------------------------------------------------------------------
+      */
+
+      await supabase
+        .from('orders')
+        .update({
+          status:
+            'failed',
+        })
+        .eq(
+          'id',
+          orderId,
+        );
+
+      res.status(500).json({
+        error:
+          'Failed to save payment transaction. Please try again.',
+      });
+
+      return;
+    }
+
+    console.log(
+      '[PAYMENT_REQUEST] Zibal track ID saved',
+      {
+        orderId,
+        trackId:
+          zibal.trackId,
+      },
+    );
 
     /*
-     * ------------------------------------------------------------
-     * 14. Send successful response
-     * ------------------------------------------------------------
-     */
+    |--------------------------------------------------------------------------
+    | 16. Generate payment URL
+    |--------------------------------------------------------------------------
+    */
 
-    const durationMs = Date.now() - requestStartedAt;
+    console.log(
+      '[PAYMENT_REQUEST] Step 14: Generating payment URL',
+    );
 
-    console.log('[PAYMENT_REQUEST] Payment request completed', {
-      orderId: order.id,
-      trackId: zibal.trackId,
-      totalAmount,
-      amountRials,
-      durationMs,
-    });
+    const paymentUrl =
+      zibalStartUrl(
+        zibal.trackId,
+      );
 
-    console.log('[PAYMENT_REQUEST] ========================================');
+    console.log(
+      '[PAYMENT_REQUEST] Payment URL generated',
+      {
+        orderId,
+        trackId:
+          zibal.trackId,
+      },
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 17. Successful response
+    |--------------------------------------------------------------------------
+    */
+
+    const durationMs =
+      Date.now() -
+      requestStartedAt;
+
+    console.log(
+      '[PAYMENT_REQUEST] Payment request completed successfully',
+      {
+        orderId,
+        trackId:
+          zibal.trackId,
+        totalAmount,
+        amountRials,
+        durationMs,
+      },
+    );
+
+    console.log(
+      '[PAYMENT_REQUEST] ========================================',
+    );
 
     res.status(200).json({
-      orderId: order.id,
+      orderId,
 
-      // There is no order_number column in the current database.
-      // Use the UUID order ID as the order reference.
-      orderNumber: order.id,
+      /*
+       * Current orders table does NOT contain order_number.
+       * Therefore order ID is used as order reference.
+       */
 
-      trackId: zibal.trackId,
+      orderNumber:
+        orderId,
+
+      trackId:
+        zibal.trackId,
+
       paymentUrl,
     });
   } catch (err) {
-    const durationMs = Date.now() - requestStartedAt;
+    /*
+    |--------------------------------------------------------------------------
+    | Global error handler for this controller
+    |--------------------------------------------------------------------------
+    */
+
+    const durationMs =
+      Date.now() -
+      requestStartedAt;
 
     const errorMessage =
       err instanceof Error
@@ -667,31 +1306,63 @@ export async function requestPayment(
         ? err.stack
         : undefined;
 
-    console.error('[PAYMENT_REQUEST] Unexpected error', {
-      message: errorMessage,
-      stack: errorStack,
-      durationMs,
-    });
+    console.error(
+      '[PAYMENT_REQUEST] ========================================',
+    );
+
+    console.error(
+      '[PAYMENT_REQUEST] UNEXPECTED ERROR',
+      {
+        message:
+          errorMessage,
+
+        stack:
+          errorStack,
+
+        durationMs,
+      },
+    );
 
     const code =
       err instanceof Error
         ? err.message
         : 'invalid_order';
 
-    const status =
+    /*
+     * Validation errors -> 400
+     * Product/stock errors -> 400
+     * Configuration/server/database errors -> 500
+     */
+
+    const isClientError =
       code.startsWith('invalid_') ||
-      code === 'insufficient_stock' ||
-      code === 'product_not_found'
+      code ===
+        'insufficient_stock' ||
+      code ===
+        'product_not_found';
+
+    const status =
+      isClientError
         ? 400
         : 500;
 
-    console.error('[PAYMENT_REQUEST] Returning error response', {
+    console.error(
+      '[PAYMENT_REQUEST] Returning error response',
+      {
+        code,
+        status,
+        durationMs,
+      },
+    );
+
+    jsonError(
+      res,
       code,
       status,
-    });
+    );
 
-    jsonError(res, code, status);
-
-    console.log('[PAYMENT_REQUEST] ========================================');
+    console.error(
+      '[PAYMENT_REQUEST] ========================================',
+    );
   }
 }

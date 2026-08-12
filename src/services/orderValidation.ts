@@ -47,37 +47,93 @@ export function parseProductId(value: unknown): number {
 export function validateCustomer(
   details: CustomerInput | undefined,
 ): CustomerInput {
+  console.log('[order-validation] validateCustomer() started', {
+    hasDetails: Boolean(details),
+  });
+
   if (!details) {
+    console.error('[order-validation] Customer details are missing');
+
     throw new Error('invalid_customer');
   }
 
   const name = details.name?.trim() ?? '';
   const phone = details.phone?.trim() ?? '';
   const address = details.address?.trim() ?? '';
+  const email = (details.email ?? '').trim();
+  const note = (details.note ?? '').trim();
+
+  console.log('[order-validation] Customer field validation data', {
+    hasName: Boolean(name),
+    nameLength: name.length,
+
+    hasPhone: Boolean(phone),
+    phoneLength: phone.length,
+
+    hasAddress: Boolean(address),
+    addressLength: address.length,
+
+    hasEmail: Boolean(email),
+    emailLength: email.length,
+
+    hasNote: Boolean(note),
+    noteLength: note.length,
+  });
 
   if (name.length < 2 || name.length > 120) {
+    console.error('[order-validation] Invalid name', {
+      nameLength: name.length,
+      minLength: 2,
+      maxLength: 120,
+    });
+
     throw new Error('invalid_name');
   }
 
   if (!PHONE_RE.test(phone)) {
+    console.error('[order-validation] Invalid phone', {
+      phoneLength: phone.length,
+      phonePatternMatched: PHONE_RE.test(phone),
+    });
+
     throw new Error('invalid_phone');
   }
 
   if (address.length < 5 || address.length > 500) {
+    console.error('[order-validation] Invalid address', {
+      addressLength: address.length,
+      minLength: 5,
+      maxLength: 500,
+    });
+
     throw new Error('invalid_address');
   }
 
-  const email = (details.email ?? '').trim();
-
   if (email.length > 200) {
+    console.error('[order-validation] Invalid email', {
+      emailLength: email.length,
+      maxLength: 200,
+    });
+
     throw new Error('invalid_email');
   }
 
-  const note = (details.note ?? '').trim();
-
   if (note.length > 1000) {
+    console.error('[order-validation] Invalid note', {
+      noteLength: note.length,
+      maxLength: 1000,
+    });
+
     throw new Error('invalid_note');
   }
+
+  console.log('[order-validation] Customer validation passed', {
+    nameLength: name.length,
+    phoneLength: phone.length,
+    addressLength: address.length,
+    emailLength: email.length,
+    noteLength: note.length,
+  });
 
   return {
     name,
@@ -87,7 +143,6 @@ export function validateCustomer(
     note,
   };
 }
-
 export function normalizeOrderItems(items: unknown): OrderLineInput[] {
   if (
     !Array.isArray(items) ||
