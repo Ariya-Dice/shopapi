@@ -99,15 +99,14 @@ export function validateCustomer(
     throw new Error('invalid_phone');
   }
 
-  if (address.length < 5 || address.length > 500) {
-    console.error('[order-validation] Invalid address', {
-      addressLength: address.length,
-      minLength: 5,
-      maxLength: 500,
-    });
+if (address.length > 500) {
+  console.error('[order-validation] Invalid address', {
+    addressLength: address.length,
+    maxLength: 500,
+  });
 
-    throw new Error('invalid_address');
-  }
+  throw new Error('invalid_address');
+}
 
   if (email.length > 200) {
     console.error('[order-validation] Invalid email', {
