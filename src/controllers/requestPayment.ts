@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 
+import { PaymentTracer, createRequestId } from '../lib/paymentLogger.js';
 import { getSupabaseAdmin } from '../lib/supabase.js';
 import { zibalRequest, zibalStartUrl } from '../services/zibal.js';
 
@@ -181,7 +182,7 @@ export async function requestPayment(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const requestStartedAt = Date.now();
+  const tracer = new PaymentTracer(createRequestId());
 
   console.log('');
   console.log(
@@ -189,6 +190,7 @@ export async function requestPayment(
   );
   console.log(
     '[PAYMENT_REQUEST] Payment request started',
+    { requestId: tracer.requestId },
   );
 
   try {
@@ -269,6 +271,8 @@ export async function requestPayment(
       callbackUrl,
     );
 
+    tracer.step('validate_env');
+
     /*
     |--------------------------------------------------------------------------
     | 3. Request body
@@ -320,6 +324,8 @@ export async function requestPayment(
             : 0,
       },
     );
+
+    tracer.step('parse_body');
 
     /*
     |--------------------------------------------------------------------------
@@ -451,6 +457,8 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('validate_customer');
+
     /*
     |--------------------------------------------------------------------------
     | 5. Order items validation
@@ -537,6 +545,8 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('validate_items');
+
     /*
     |--------------------------------------------------------------------------
     | 6. Initialize Supabase
@@ -575,6 +585,8 @@ export async function requestPayment(
       '[PAYMENT_REQUEST] Supabase admin client initialized',
     );
 
+    tracer.step('init_supabase');
+
     /*
     |--------------------------------------------------------------------------
     | 7. Fetch products
@@ -598,6 +610,8 @@ export async function requestPayment(
       },
     );
 
+    const productsFetchStartedAt = Date.now();
+
     const {
       data: products,
       error: productsError,
@@ -610,6 +624,11 @@ export async function requestPayment(
         'id',
         productIds,
       );
+
+    tracer.supabase(
+      Date.now() - productsFetchStartedAt,
+      'products_fetch',
+    );
 
     if (productsError) {
       logSupabaseError(
@@ -680,6 +699,8 @@ export async function requestPayment(
       return;
     }
 
+    tracer.step('fetch_products');
+
     /*
     |--------------------------------------------------------------------------
     | 8. Build product map
@@ -713,6 +734,8 @@ export async function requestPayment(
           productMap.size,
       },
     );
+
+    tracer.step('build_product_map');
 
     /*
     |--------------------------------------------------------------------------
@@ -929,6 +952,8 @@ export async function requestPayment(
       return;
     }
 
+    tracer.step('validate_stock_total');
+
     /*
     |--------------------------------------------------------------------------
     | 10. Generate order number
@@ -950,6 +975,8 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('generate_order_number');
+
     /*
     |--------------------------------------------------------------------------
     | 11. Create order
@@ -959,6 +986,8 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Step 10: Creating order',
     );
+
+    const orderInsertStartedAt = Date.now();
 
     const {
       data: order,
@@ -1003,6 +1032,11 @@ export async function requestPayment(
         'id, order_number',
       )
       .single();
+
+    tracer.supabase(
+      Date.now() - orderInsertStartedAt,
+      'orders_insert',
+    );
 
     if (orderError) {
       logSupabaseError(
@@ -1073,6 +1107,8 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('insert_order');
+
     /*
     |--------------------------------------------------------------------------
     | 12. Create order items
@@ -1111,6 +1147,8 @@ export async function requestPayment(
       },
     );
 
+    const orderItemsInsertStartedAt = Date.now();
+
     const {
       error:
         itemsError,
@@ -1119,6 +1157,11 @@ export async function requestPayment(
       .insert(
         orderItems,
       );
+
+    tracer.supabase(
+      Date.now() - orderItemsInsertStartedAt,
+      'order_items_insert',
+    );
 
     if (itemsError) {
       console.error(
@@ -1146,6 +1189,8 @@ export async function requestPayment(
         },
       );
 
+      const rollbackStartedAt = Date.now();
+
       const {
         error:
           rollbackError,
@@ -1156,6 +1201,11 @@ export async function requestPayment(
           'id',
           orderId,
         );
+
+      tracer.supabase(
+        Date.now() - rollbackStartedAt,
+        'orders_rollback_delete',
+      );
 
       if (rollbackError) {
         logSupabaseError(
@@ -1195,6 +1245,8 @@ export async function requestPayment(
           orderItems.length,
       },
     );
+
+    tracer.step('insert_order_items');
 
     /*
     |--------------------------------------------------------------------------
@@ -1248,6 +1300,8 @@ export async function requestPayment(
         },
       );
 
+      const markInvalidAmountStartedAt = Date.now();
+
       await supabase
         .from('orders')
         .update({
@@ -1259,6 +1313,13 @@ export async function requestPayment(
           orderId,
         );
 
+      tracer.supabase(
+        Date.now() - markInvalidAmountStartedAt,
+        'orders_mark_failed_invalid_amount',
+      );
+
+      tracer.total();
+
       jsonError(
         res,
         'invalid_order',
@@ -1267,6 +1328,8 @@ export async function requestPayment(
 
       return;
     }
+
+    tracer.step('calculate_zibal_amount');
 
     /*
     |--------------------------------------------------------------------------
@@ -1289,6 +1352,8 @@ export async function requestPayment(
     );
 
     let zibal;
+
+    const zibalStartedAt = Date.now();
 
     try {
       zibal =
@@ -1315,6 +1380,8 @@ export async function requestPayment(
     } catch (
       zibalError
     ) {
+      tracer.zibal(Date.now() - zibalStartedAt);
+
       console.error(
         '[PAYMENT_REQUEST] Zibal request threw an exception',
         {
@@ -1333,6 +1400,8 @@ export async function requestPayment(
         },
       );
 
+      const markFailedStartedAt = Date.now();
+
       const {
         error:
           updateError,
@@ -1347,12 +1416,19 @@ export async function requestPayment(
           orderId,
         );
 
+      tracer.supabase(
+        Date.now() - markFailedStartedAt,
+        'orders_mark_failed_after_zibal_exception',
+      );
+
       if (updateError) {
         logSupabaseError(
           'mark order failed after Zibal exception',
           updateError,
         );
       }
+
+      tracer.total();
 
       res.status(502).json({
         error:
@@ -1361,6 +1437,8 @@ export async function requestPayment(
 
       return;
     }
+
+    tracer.zibal(Date.now() - zibalStartedAt);
 
     console.log(
       '[PAYMENT_REQUEST] Zibal response received',
@@ -1414,6 +1492,8 @@ export async function requestPayment(
         },
       );
 
+      const markFailedAfterRejectStartedAt = Date.now();
+
       const {
         error:
           updateError,
@@ -1428,12 +1508,19 @@ export async function requestPayment(
           orderId,
         );
 
+      tracer.supabase(
+        Date.now() - markFailedAfterRejectStartedAt,
+        'orders_mark_failed_after_zibal_reject',
+      );
+
       if (updateError) {
         logSupabaseError(
           'mark order failed after Zibal failure',
           updateError,
         );
       }
+
+      tracer.total();
 
       res.status(502).json({
         error:
@@ -1456,6 +1543,8 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('zibal_response_validated');
+
     /*
     |--------------------------------------------------------------------------
     | 16. Save Zibal track ID
@@ -1465,6 +1554,8 @@ export async function requestPayment(
     console.log(
       '[PAYMENT_REQUEST] Step 14: Saving Zibal track ID',
     );
+
+    const trackUpdateStartedAt = Date.now();
 
     const {
       error:
@@ -1480,6 +1571,11 @@ export async function requestPayment(
         orderId,
       );
 
+    tracer.supabase(
+      Date.now() - trackUpdateStartedAt,
+      'orders_save_track_id',
+    );
+
     if (trackUpdateError) {
       logSupabaseError(
         'save Zibal track ID',
@@ -1492,6 +1588,8 @@ export async function requestPayment(
       |--------------------------------------------------------------------------
       */
 
+      const markFailedTrackStartedAt = Date.now();
+
       await supabase
         .from('orders')
         .update({
@@ -1502,6 +1600,13 @@ export async function requestPayment(
           'id',
           orderId,
         );
+
+      tracer.supabase(
+        Date.now() - markFailedTrackStartedAt,
+        'orders_mark_failed_after_track_save_error',
+      );
+
+      tracer.total();
 
       res.status(500).json({
         error:
@@ -1523,6 +1628,8 @@ export async function requestPayment(
           zibal.trackId,
       },
     );
+
+    tracer.step('save_track_id');
 
     /*
     |--------------------------------------------------------------------------
@@ -1552,15 +1659,15 @@ export async function requestPayment(
       },
     );
 
+    tracer.step('generate_payment_url');
+
     /*
     |--------------------------------------------------------------------------
     | 18. Successful response
     |--------------------------------------------------------------------------
     */
 
-    const durationMs =
-      Date.now() -
-      requestStartedAt;
+    const durationMs = tracer.total();
 
     console.log(
       '[PAYMENT_REQUEST] Payment request completed successfully',
@@ -1578,6 +1685,7 @@ export async function requestPayment(
         amountRials,
 
         durationMs,
+        requestId: tracer.requestId,
       },
     );
 
@@ -1612,9 +1720,7 @@ export async function requestPayment(
     |--------------------------------------------------------------------------
     */
 
-    const durationMs =
-      Date.now() -
-      requestStartedAt;
+    const durationMs = tracer.total();
 
     const errorMessage =
       err instanceof Error
@@ -1640,6 +1746,7 @@ export async function requestPayment(
           errorStack,
 
         durationMs,
+        requestId: tracer.requestId,
       },
     );
 
@@ -1676,6 +1783,7 @@ export async function requestPayment(
         status,
 
         durationMs,
+        requestId: tracer.requestId,
       },
     );
 

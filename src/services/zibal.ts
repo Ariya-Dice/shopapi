@@ -2,6 +2,9 @@ import axios from 'axios';
 
 const ZIBAL_BASE = 'https://gateway.zibal.ir';
 
+/** Explicit ceiling for Zibal gateway HTTP calls (request + verify). */
+export const ZIBAL_HTTP_TIMEOUT_MS = 15_000;
+
 export interface ZibalRequestResponse {
   result: number;
   message?: string;
@@ -60,7 +63,7 @@ export async function zibalRequest(payload: {
             'Content-Type': 'application/json',
           },
           validateStatus: () => true,
-          timeout: 15000,
+          timeout: ZIBAL_HTTP_TIMEOUT_MS,
         },
       );
 
@@ -172,7 +175,7 @@ export async function zibalVerify(
             'Content-Type': 'application/json',
           },
           validateStatus: () => true,
-          timeout: 15000,
+          timeout: ZIBAL_HTTP_TIMEOUT_MS,
         },
       );
 
