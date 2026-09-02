@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import paymentRoutes from './routes/payment.js';
+import torobRoutes from './routes/torob.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -17,6 +18,8 @@ app.use(
       'x-client-info',
       'apikey',
       'content-type',
+      'X-Torob-Token',
+      'X-Torob-Token-Version',
     ],
   }),
 );
@@ -28,6 +31,8 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/payment', paymentRoutes);
+
+app.use('/torob_api', torobRoutes);
 
 app.use(errorHandler);
 
