@@ -1,4 +1,3 @@
-```ts
 import { createClient } from '@supabase/supabase-js';
 import { createPublicKey, verify } from 'node:crypto';
 import type { Request } from 'express';
@@ -10,7 +9,8 @@ MCowBQYDK2VwAyEAt6Mu4T0pBORY11W+QeM35UsmLO3vsf+6yKpFDEImFk0=
 const PAGE_SIZE = 100;
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseServiceRoleKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseServiceRoleKey) {
   throw new Error(
@@ -111,7 +111,11 @@ function parseJwt(token: string) {
     throw new Error('Invalid JWT format');
   }
 
-  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  const [
+    encodedHeader,
+    encodedPayload,
+    encodedSignature,
+  ] = parts;
 
   const header = JSON.parse(
     base64UrlToBuffer(encodedHeader).toString('utf8'),
@@ -137,11 +141,17 @@ function validateTorobJwt(req: Request): void {
   const tokenVersion = req.header('X-Torob-Token-Version');
 
   if (!token) {
-    throw new TorobAuthError('Torob token is missing', 401);
+    throw new TorobAuthError(
+      'Torob token is missing',
+      401,
+    );
   }
 
   if (tokenVersion !== '1') {
-    throw new TorobAuthError('Invalid Torob token version', 401);
+    throw new TorobAuthError(
+      'Invalid Torob token version',
+      401,
+    );
   }
 
   const {
@@ -153,7 +163,10 @@ function validateTorobJwt(req: Request): void {
   } = parseJwt(token);
 
   if (header.alg !== 'EdDSA') {
-    throw new TorobAuthError('Invalid JWT algorithm', 401);
+    throw new TorobAuthError(
+      'Invalid JWT algorithm',
+      401,
+    );
   }
 
   const signingInput = Buffer.from(
@@ -175,7 +188,10 @@ function validateTorobJwt(req: Request): void {
   );
 
   if (!isValidSignature) {
-    throw new TorobAuthError('Invalid JWT signature', 401);
+    throw new TorobAuthError(
+      'Invalid JWT signature',
+      401,
+    );
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -184,7 +200,10 @@ function validateTorobJwt(req: Request): void {
     typeof payload.exp !== 'number' ||
     now >= payload.exp
   ) {
-    throw new TorobAuthError('JWT has expired', 401);
+    throw new TorobAuthError(
+      'JWT has expired',
+      401,
+    );
   }
 
   if (
@@ -194,13 +213,19 @@ function validateTorobJwt(req: Request): void {
       now < payload.nbf
     )
   ) {
-    throw new TorobAuthError('JWT is not active yet', 401);
+    throw new TorobAuthError(
+      'JWT is not active yet',
+      401,
+    );
   }
 
   const requestHost = req.get('host');
 
   if (!requestHost) {
-    throw new TorobAuthError('Request host is missing', 401);
+    throw new TorobAuthError(
+      'Request host is missing',
+      401,
+    );
   }
 
   if (payload.aud !== requestHost) {
@@ -231,27 +256,38 @@ export class TorobValidationError extends Error {
   }
 }
 
-function validateRequestBody(body: unknown): TorobRequest {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new TorobValidationError('Invalid request body');
+function validateRequestBody(
+  body: unknown,
+): TorobRequest {
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    Array.isArray(body)
+  ) {
+    throw new TorobValidationError(
+      'Invalid request body',
+    );
   }
 
   const value = body as Record<string, unknown>;
 
-  const hasPageUrls = Object.prototype.hasOwnProperty.call(
-    value,
-    'page_urls',
-  );
+  const hasPageUrls =
+    Object.prototype.hasOwnProperty.call(
+      value,
+      'page_urls',
+    );
 
-  const hasPageUniques = Object.prototype.hasOwnProperty.call(
-    value,
-    'page_uniques',
-  );
+  const hasPageUniques =
+    Object.prototype.hasOwnProperty.call(
+      value,
+      'page_uniques',
+    );
 
-  const hasPage = Object.prototype.hasOwnProperty.call(
-    value,
-    'page',
-  );
+  const hasPage =
+    Object.prototype.hasOwnProperty.call(
+      value,
+      'page',
+    );
 
   if (hasPageUrls) {
     if (
@@ -304,7 +340,8 @@ function validateRequestBody(body: unknown): TorobRequest {
     }
 
     return {
-      page_uniques: value.page_uniques as string[],
+      page_uniques:
+        value.page_uniques as string[],
     };
   }
 
@@ -364,20 +401,45 @@ function addSpec(
   key: string,
   value: string | null | undefined,
 ): void {
-  if (typeof value === 'string' && value.trim()) {
+  if (
+    typeof value === 'string' &&
+    value.trim()
+  ) {
     spec[key] = value.trim();
   }
 }
 
-function mapProduct(product: ProductRow): TorobProduct {
+function mapProduct(
+  product: ProductRow,
+): TorobProduct {
   const spec: Record<string, string> = {};
 
   addSpec(spec, 'رنگ', product.color);
-  addSpec(spec, 'جنس بدنه', product.body_material);
-  addSpec(spec, 'جنس دسته', product.handle_material);
-  addSpec(spec, 'وزن بدنه', product.body_weight);
-  addSpec(spec, 'وزن بسته‌بندی', product.package_weight);
-  addSpec(spec, 'سایز کارتریج', product.cartridge_size);
+  addSpec(
+    spec,
+    'جنس بدنه',
+    product.body_material,
+  );
+  addSpec(
+    spec,
+    'جنس دسته',
+    product.handle_material,
+  );
+  addSpec(
+    spec,
+    'وزن بدنه',
+    product.body_weight,
+  );
+  addSpec(
+    spec,
+    'وزن بسته‌بندی',
+    product.package_weight,
+  );
+  addSpec(
+    spec,
+    'سایز کارتریج',
+    product.cartridge_size,
+  );
   addSpec(
     spec,
     'جنس مهره کارتریج',
@@ -472,7 +534,9 @@ function mapProduct(product: ProductRow): TorobProduct {
     image_links: [],
     spec,
     date_added:
-      new Date(product.created_at).toISOString(),
+      new Date(
+        product.created_at,
+      ).toISOString(),
   };
 
   if (product.goods_type) {
@@ -516,7 +580,9 @@ function mapProduct(product: ProductRow): TorobProduct {
   return result;
 }
 
-async function getAllProducts(): Promise<ProductRow[]> {
+async function getAllProducts(): Promise<
+  ProductRow[]
+> {
   const { data, error } = await supabase
     .from('products')
     .select(`
@@ -624,7 +690,9 @@ function sortProductsByIdOrder(
   return ids
     .map((id) => map.get(id))
     .filter(
-      (product): product is ProductRow =>
+      (
+        product,
+      ): product is ProductRow =>
         Boolean(product),
     );
 }
@@ -642,10 +710,9 @@ function extractProductIdFromPageUrl(
       return null;
     }
 
-    const match =
-      url.hash.match(
-        /^#\/product\/(\d+)\/?$/,
-      );
+    const match = url.hash.match(
+      /^#\/product\/(\d+)\/?$/,
+    );
 
     if (!match) {
       return null;
@@ -653,9 +720,14 @@ function extractProductIdFromPageUrl(
 
     const id = Number(match[1]);
 
-    return Number.isInteger(id) && id > 0
-      ? id
-      : null;
+    if (
+      !Number.isInteger(id) ||
+      id <= 0
+    ) {
+      return null;
+    }
+
+    return id;
   } catch {
     return null;
   }
@@ -669,17 +741,26 @@ export async function handleTorobProducts(
   const requestBody =
     validateRequestBody(req.body);
 
-  if (Array.isArray(requestBody.page_urls)) {
+  /*
+   * Request by page_urls
+   *
+   * Important:
+   * We explicitly check !== undefined so TypeScript
+   * can safely narrow the union type.
+   */
+  if (requestBody.page_urls !== undefined) {
     const ids = requestBody.page_urls
       .map(extractProductIdFromPageUrl)
       .filter(
         (id): id is number =>
-          id !== null &&
+          typeof id === 'number' &&
           Number.isInteger(id) &&
           id > 0,
       );
 
-    const uniqueIds = [...new Set(ids)];
+    const uniqueIds = [
+      ...new Set(ids),
+    ];
 
     const products =
       await getProductsByIds(uniqueIds);
@@ -700,8 +781,15 @@ export async function handleTorobProducts(
     };
   }
 
+  /*
+   * Request by page_uniques
+   *
+   * Important:
+   * We explicitly check !== undefined so TypeScript
+   * can safely narrow the union type.
+   */
   if (
-    Array.isArray(requestBody.page_uniques)
+    requestBody.page_uniques !== undefined
   ) {
     const ids = requestBody.page_uniques
       .map((value) => Number(value))
@@ -711,7 +799,9 @@ export async function handleTorobProducts(
           id > 0,
       );
 
-    const uniqueIds = [...new Set(ids)];
+    const uniqueIds = [
+      ...new Set(ids),
+    ];
 
     const products =
       await getProductsByIds(uniqueIds);
@@ -732,13 +822,22 @@ export async function handleTorobProducts(
     };
   }
 
-  const products = await getAllProducts();
+  /*
+   * Request by page
+   *
+   * At this point TypeScript knows that
+   * requestBody is the third union member.
+   */
+  const products =
+    await getAllProducts();
 
   const total = products.length;
 
   const maxPages = Math.max(
     1,
-    Math.ceil(total / PAGE_SIZE),
+    Math.ceil(
+      total / PAGE_SIZE,
+    ),
   );
 
   const currentPage = Math.min(
@@ -747,12 +846,14 @@ export async function handleTorobProducts(
   );
 
   const start =
-    (currentPage - 1) * PAGE_SIZE;
+    (currentPage - 1) *
+    PAGE_SIZE;
 
-  const pageProducts = products.slice(
-    start,
-    start + PAGE_SIZE,
-  );
+  const pageProducts =
+    products.slice(
+      start,
+      start + PAGE_SIZE,
+    );
 
   return {
     api_version: 'torob_api_v3',
@@ -763,4 +864,3 @@ export async function handleTorobProducts(
       pageProducts.map(mapProduct),
   };
 }
-```
