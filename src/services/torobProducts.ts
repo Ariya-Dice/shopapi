@@ -1,3 +1,4 @@
+```ts
 import { createClient } from '@supabase/supabase-js';
 import { createPublicKey, verify } from 'node:crypto';
 import type { Request } from 'express';
@@ -203,7 +204,10 @@ function validateTorobJwt(req: Request): void {
   }
 
   if (payload.aud !== requestHost) {
-    throw new TorobAuthError('JWT audience does not match request host', 401);
+    throw new TorobAuthError(
+      'JWT audience does not match request host',
+      401,
+    );
   }
 }
 
@@ -261,7 +265,9 @@ function validateRequestBody(body: unknown): TorobRequest {
 
     if (
       !value.page_urls.every(
-        (item) => typeof item === 'string' && item.length <= 1500,
+        (item) =>
+          typeof item === 'string' &&
+          item.length <= 1500,
       )
     ) {
       throw new TorobValidationError(
@@ -303,7 +309,10 @@ function validateRequestBody(body: unknown): TorobRequest {
   }
 
   if (hasPage) {
-    if (typeof value.page !== 'number' || !Number.isInteger(value.page)) {
+    if (
+      typeof value.page !== 'number' ||
+      !Number.isInteger(value.page)
+    ) {
       throw new TorobValidationError(
         'page must be an integer',
       );
@@ -340,7 +349,8 @@ function validateRequestBody(body: unknown): TorobRequest {
 
 function getShopDomain(): string {
   const configured =
-    process.env.TOROB_SHOP_DOMAIN || 'https://www.rbshop.ir';
+    process.env.TOROB_SHOP_DOMAIN ||
+    'https://www.rbshop.ir';
 
   return configured.replace(/\/+$/, '');
 }
@@ -353,7 +363,7 @@ function addSpec(
   spec: Record<string, string>,
   key: string,
   value: string | null | undefined,
-) {
+): void {
   if (typeof value === 'string' && value.trim()) {
     spec[key] = value.trim();
   }
@@ -373,18 +383,61 @@ function mapProduct(product: ProductRow): TorobProduct {
     'جنس مهره کارتریج',
     product.cartridge_nut_material,
   );
-  addSpec(spec, 'مهره چپ‌گرد', product.left_handed_nut);
-  addSpec(spec, 'خروجی آب گرم و سرد', product.hot_cold_output);
-  addSpec(spec, 'ابعاد بسته‌بندی', product.package_dimensions);
-  addSpec(spec, 'شلنگ رابط', product.postal_hose);
-  addSpec(spec, 'اکسنتریک', product.escutcheon);
-  addSpec(spec, 'جنس مغزی', product.valve_material);
-  addSpec(spec, 'جنس آبریز', product.spout_material);
-  addSpec(spec, 'جنس پلاتور', product.plator_material);
-  addSpec(spec, 'جنس شلنگ', product.hose_material);
+  addSpec(
+    spec,
+    'مهره چپ‌گرد',
+    product.left_handed_nut,
+  );
+  addSpec(
+    spec,
+    'خروجی آب گرم و سرد',
+    product.hot_cold_output,
+  );
+  addSpec(
+    spec,
+    'ابعاد بسته‌بندی',
+    product.package_dimensions,
+  );
+  addSpec(
+    spec,
+    'شلنگ رابط',
+    product.postal_hose,
+  );
+  addSpec(
+    spec,
+    'اکسنتریک',
+    product.escutcheon,
+  );
+  addSpec(
+    spec,
+    'جنس مغزی',
+    product.valve_material,
+  );
+  addSpec(
+    spec,
+    'جنس آبریز',
+    product.spout_material,
+  );
+  addSpec(
+    spec,
+    'جنس پلاتور',
+    product.plator_material,
+  );
+  addSpec(
+    spec,
+    'جنس شلنگ',
+    product.hose_material,
+  );
 
-  if (Array.isArray(product.tags) && product.tags.length > 0) {
-    addSpec(spec, 'برچسب‌ها', product.tags.join('، '));
+  if (
+    Array.isArray(product.tags) &&
+    product.tags.length > 0
+  ) {
+    addSpec(
+      spec,
+      'برچسب‌ها',
+      product.tags.join('، '),
+    );
   }
 
   const titleParts = [
@@ -392,7 +445,9 @@ function mapProduct(product: ProductRow): TorobProduct {
     product.model,
     product.type,
   ].filter(
-    (value) => typeof value === 'string' && value.trim(),
+    (value) =>
+      typeof value === 'string' &&
+      value.trim(),
   );
 
   const title =
@@ -403,26 +458,34 @@ function mapProduct(product: ProductRow): TorobProduct {
   const result: TorobProduct = {
     page_unique: String(product.id),
     page_url: buildProductUrl(product.id),
-    product_group_id: product.model || String(product.id),
+    product_group_id:
+      product.model || String(product.id),
     title: title.slice(0, 500),
     current_price:
-      Number.isInteger(product.price) && product.price >= 0
+      Number.isInteger(product.price) &&
+      product.price >= 0
         ? product.price
         : 0,
     availability:
-      Number.isFinite(product.stock) && product.stock > 0,
+      Number.isFinite(product.stock) &&
+      product.stock > 0,
     image_links: [],
     spec,
-    date_added: new Date(product.created_at).toISOString(),
+    date_added:
+      new Date(product.created_at).toISOString(),
   };
 
   if (product.goods_type) {
-    result.subtitle = product.goods_type.slice(0, 500);
-    result.category_name = product.goods_type.slice(0, 200);
+    result.subtitle =
+      product.goods_type.slice(0, 500);
+
+    result.category_name =
+      product.goods_type.slice(0, 200);
   }
 
   if (product.description) {
-    result.short_desc = product.description.slice(0, 500);
+    result.short_desc =
+      product.description.slice(0, 500);
   }
 
   if (product.image) {
@@ -432,12 +495,21 @@ function mapProduct(product: ProductRow): TorobProduct {
       let imageUrl = image;
 
       if (image.startsWith('/')) {
-        imageUrl = `${getShopDomain()}${image}`;
-      } else if (!/^https?:\/\//i.test(image)) {
-        imageUrl = `${getShopDomain()}/${image.replace(/^\/+/, '')}`;
+        imageUrl =
+          `${getShopDomain()}${image}`;
+      } else if (
+        !/^https?:\/\//i.test(image)
+      ) {
+        imageUrl =
+          `${getShopDomain()}/${image.replace(
+            /^\/+/,
+            '',
+          )}`;
       }
 
-      result.image_links = [imageUrl.slice(0, 1000)];
+      result.image_links = [
+        imageUrl.slice(0, 1000),
+      ];
     }
   }
 
@@ -476,10 +548,14 @@ async function getAllProducts(): Promise<ProductRow[]> {
       brand,
       stock
     `)
-    .order('created_at', { ascending: false });
+    .order('created_at', {
+      ascending: false,
+    });
 
   if (error) {
-    throw new Error(`Supabase products query failed: ${error.message}`);
+    throw new Error(
+      `Supabase products query failed: ${error.message}`,
+    );
   }
 
   return (data || []) as ProductRow[];
@@ -526,7 +602,9 @@ async function getProductsByIds(
     .in('id', ids);
 
   if (error) {
-    throw new Error(`Supabase product lookup failed: ${error.message}`);
+    throw new Error(
+      `Supabase product lookup failed: ${error.message}`,
+    );
   }
 
   return (data || []) as ProductRow[];
@@ -537,7 +615,10 @@ function sortProductsByIdOrder(
   ids: number[],
 ): ProductRow[] {
   const map = new Map(
-    products.map((product) => [product.id, product]),
+    products.map((product) => [
+      product.id,
+      product,
+    ]),
   );
 
   return ids
@@ -554,17 +635,27 @@ function extractProductIdFromPageUrl(
   try {
     const url = new URL(pageUrl);
 
-    if (url.origin !== new URL(getShopDomain()).origin) {
+    if (
+      url.origin !==
+      new URL(getShopDomain()).origin
+    ) {
       return null;
     }
 
-    const match = url.hash.match(/^#\/product\/(\d+)\/?$/);
+    const match =
+      url.hash.match(
+        /^#\/product\/(\d+)\/?$/,
+      );
 
     if (!match) {
       return null;
     }
 
-    return Number(match[1]);
+    const id = Number(match[1]);
+
+    return Number.isInteger(id) && id > 0
+      ? id
+      : null;
   } catch {
     return null;
   }
@@ -575,64 +666,76 @@ export async function handleTorobProducts(
 ) {
   validateTorobJwt(req);
 
-  const requestBody = validateRequestBody(req.body);
+  const requestBody =
+    validateRequestBody(req.body);
 
-  if ('page_urls' in requestBody) {
+  if (Array.isArray(requestBody.page_urls)) {
     const ids = requestBody.page_urls
       .map(extractProductIdFromPageUrl)
       .filter(
         (id): id is number =>
-          Number.isInteger(id) && id > 0,
-      );
-
-    const uniqueIds = [...new Set(ids)];
-
-    const products = await getProductsByIds(uniqueIds);
-
-    const orderedProducts = sortProductsByIdOrder(
-      products,
-      uniqueIds,
-    );
-
-    return {
-      api_version: 'torob_api_v3',
-      current_page: 1,
-      total: orderedProducts.length,
-      max_pages: 1,
-      products: orderedProducts.map(mapProduct),
-    };
-  }
-
-  if ('page_uniques' in requestBody) {
-    const ids = requestBody.page_uniques
-      .map((value) => Number(value))
-      .filter(
-        (id) =>
+          id !== null &&
           Number.isInteger(id) &&
           id > 0,
       );
 
     const uniqueIds = [...new Set(ids)];
 
-    const products = await getProductsByIds(uniqueIds);
+    const products =
+      await getProductsByIds(uniqueIds);
 
-    const orderedProducts = sortProductsByIdOrder(
-      products,
-      uniqueIds,
-    );
+    const orderedProducts =
+      sortProductsByIdOrder(
+        products,
+        uniqueIds,
+      );
 
     return {
       api_version: 'torob_api_v3',
       current_page: 1,
       total: orderedProducts.length,
       max_pages: 1,
-      products: orderedProducts.map(mapProduct),
+      products:
+        orderedProducts.map(mapProduct),
+    };
+  }
+
+  if (
+    Array.isArray(requestBody.page_uniques)
+  ) {
+    const ids = requestBody.page_uniques
+      .map((value) => Number(value))
+      .filter(
+        (id): id is number =>
+          Number.isInteger(id) &&
+          id > 0,
+      );
+
+    const uniqueIds = [...new Set(ids)];
+
+    const products =
+      await getProductsByIds(uniqueIds);
+
+    const orderedProducts =
+      sortProductsByIdOrder(
+        products,
+        uniqueIds,
+      );
+
+    return {
+      api_version: 'torob_api_v3',
+      current_page: 1,
+      total: orderedProducts.length,
+      max_pages: 1,
+      products:
+        orderedProducts.map(mapProduct),
     };
   }
 
   const products = await getAllProducts();
 
   const total = products.length;
+
   const maxPages = Math.max(
     1,
     Math.ceil(total / PAGE_SIZE),
@@ -643,7 +746,9 @@ export async function handleTorobProducts(
     maxPages,
   );
 
-  const start = (currentPage - 1) * PAGE_SIZE;
+  const start =
+    (currentPage - 1) * PAGE_SIZE;
+
   const pageProducts = products.slice(
     start,
     start + PAGE_SIZE,
@@ -654,6 +759,8 @@ export async function handleTorobProducts(
     current_page: currentPage,
     total,
     max_pages: maxPages,
-    products: pageProducts.map(mapProduct),
+    products:
+      pageProducts.map(mapProduct),
   };
 }
+```
