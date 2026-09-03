@@ -1,40 +1,5 @@
-server {
-    listen 80;
-    server_name arbshop.ir www.arbshop.ir;
-    return 301 https://arbshop.ir$request_uri;
-}
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsInYiOiIxIn0.eyJhdWQiOiJyYnNob3AuaXIiLCJleHAiOjE3ODg1MzE5MDcsIm5iZiI6MTc4ODQxMTYwN30.Sc1clVfto7tzbVWdwqbtVCNK_7RWQOoNM3sAktMVcGmeaLYPCIhS0KWXihElFlwd3yywnSeO_wEZJePi-W0ZBA
 
-server {
-    listen 443 ssl;
-    server_name arbshop.ir www.arbshop.ir;
 
-    ssl_certificate /etc/letsencrypt/live/arbshop.ir/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/arbshop.ir/privkey.pem;
 
-    # هدرهای امنیتی
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # تایم‌اوت پروکسی
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-
-    location / {
-        root /var/www/rbshop;
-        try_files $uri $uri/ /index.html;
-    }
-}
+mpXiFZaUEPZmthtkIWOCiiJz_fzS5wldRiHV9h8fJdM
